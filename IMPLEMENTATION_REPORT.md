@@ -55,6 +55,10 @@ layer.
 - `tests/x11_reference_copy.py`: live hover, accessibility, immediate-save, and
   clipboard verification for the Codex reference control.
 - `README.md`: install, update, use, storage, recovery, and test instructions.
+- `.github/workflows/ci.yml`: read-only GitHub Actions checks on Ubuntu 22.04
+  for Python tests, source syntax, extension metadata, shell scripts, and
+  generated desktop entries.
+- `.gitignore`: excludes local Python and packaging build artifacts.
 
 The source executable retains its original `simple-sticky` filename to extend
 the existing project safely. Installation exposes the preferred command as
@@ -223,6 +227,8 @@ a 400 ms debounce.
 
 ### Automated and live checks completed
 
+- PASS — the GitHub Actions workflow syntax parsed locally, and every command
+  used by the workflow completed successfully against the release tree.
 - PASS — Python compilation completed for the application and four Python test
   files; shell syntax completed for install, uninstall, and property scripts.
 - PASS — 22 headless unit tests covered atomic UTF-8 replacement, exact written

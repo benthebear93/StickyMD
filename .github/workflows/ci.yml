@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            desktop-file-utils \
+            gir1.2-gtk-3.0 \
+            libgtk-3-0 \
+            python3-gi
+
+      - name: Compile Python sources
+        run: |
+          python3 -m py_compile \
+            simple-sticky \
+            tests/test_simple_sticky.py \
+            tests/x11_backspace_regression.py \
+            tests/x11_interaction.py \
+            tests/x11_reference_copy.py
+
+      - name: Run headless unit tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Check extension and shell syntax
+        run: |
+          node --check gnome-shell-extension/stickymd@local/extension.js
+          python3 -m json.tool \
+            gnome-shell-extension/stickymd@local/metadata.json >/dev/null
+          sh -n install.sh uninstall.sh tests/x11_properties.sh
+
+      - name: Validate desktop entries
+        run: |
+          desktop_output=$(mktemp -d)
+          for template in \
+            simple-sticky.desktop.in \
+            stickymd.desktop.in \
+            stickymd-new.desktop.in
+          do
+            output_name=${template%.in}
+            sed 's|@EXECUTABLE@|/home/runner/.local/bin/stickymd|g' \
+              "$template" > "$desktop_output/$output_name"
+          done
+          desktop-file-validate "$desktop_output"/*.desktop

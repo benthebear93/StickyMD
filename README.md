@@ -130,5 +130,9 @@ Run the headless test suite with:
 python3 -m unittest -v tests/test_simple_sticky.py
 ```
 
+GitHub Actions runs the headless tests plus Python, GNOME extension, shell, and
+desktop-entry validation on every push and pull request. Live GNOME/X11 behavior
+remains part of the manual verification record.
+
 Implementation details and the full verification record are in
 [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).

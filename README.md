@@ -14,7 +14,7 @@ coding agents can work with the same text.
 - Automatic saving and live reload after external file edits
 - Position and size restoration across logins
 - Move and resize from every edge or corner
-- Login autostart and a small GNOME panel button for creating notes
+- Login autostart and a small GNOME panel control for creating or stopping notes
 - Recoverable deletion through the system Trash
 - A hover action that copies the exact note path for Codex or Claude
 
@@ -51,18 +51,34 @@ can instead press `Alt+F2`, enter `r`, and press Enter.
 To update, run `./install.sh` again and restart the running process:
 
 ```bash
-kill -TERM "$(cat ~/.local/state/simple-sticky/app.lock)"
-~/.local/bin/stickymd
+~/.local/bin/stickymd quit
+./install.sh
+~/.local/bin/stickymd start
 ```
 
 ## Use
 
-- Click the StickyMD icon in the top panel to create a note.
+- Left-click the panel icon to create a note while StickyMD is running.
+- Right-click the icon and choose **Quit StickyMD** to close every note and stop
+  the background process without deleting content or state.
+- When stopped, the panel icon becomes dim. Left-click it to start StickyMD and
+  restore the registered notes without creating an extra note.
 - Hover a note to reveal its reference, copy, `+`, and `×` controls.
 - Click `+`, press `Ctrl+N`, or run `stickymd new` to create another note.
 - Drag the empty top strip to move a note.
 - Drag any edge or corner to resize it.
 - Click `×` to move that note's Markdown file to Trash.
+
+The same lifecycle controls are available from a terminal when needed:
+
+```bash
+stickymd start
+stickymd quit
+```
+
+Quitting is temporary for the current login session. Login autostart restores
+registered notes the next time the desktop session starts. It never moves or
+deletes note files; `×` remains the separate, recoverable delete action.
 
 The copy button creates a paste-ready request containing the note's first text
 line, stable short reference, and exact file path:

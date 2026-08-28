@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=StickyMD
+Comment=Editable Markdown notes on the X11 desktop layer
+Exec=@EXECUTABLE@ --autostart
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=2
+OnlyShowIn=GNOME;Unity;

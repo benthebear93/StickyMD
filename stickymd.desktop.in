@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=StickyMD
+Comment=Show existing desktop notes or create the first note
+Exec=@EXECUTABLE@
+Icon=accessories-text-editor
+Terminal=false
+StartupNotify=false
+Categories=Utility;
+Keywords=sticky;note;memo;markdown;

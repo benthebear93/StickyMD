@@ -1,0 +1,1514 @@
+#!/usr/bin/python3
+"""Native multi-note desktop-layer sticky notes for GNOME on X11."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+import re
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Any, Optional
+import uuid
+import warnings
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GdkX11", "3.0")
+from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk  # noqa: E402
+
+
+APP_NAME = "StickyMD"
+VERSION = "0.1.0"
+STATE_VERSION = 2
+SAVE_DELAY_MS = 400
+RELOAD_DELAY_MS = 120
+STATE_DELAY_MS = 400
+DEFAULT_GEOMETRY = {"x": 48, "y": 48, "width": 320, "height": 320}
+MIN_WIDTH = 160
+MIN_HEIGHT = 120
+RESIZE_BORDER = 8
+TOP_BAR_HEIGHT = 24
+NEW_NOTE_OFFSET = 28
+VISIBLE_MARGIN = 40
+NOTE_ID_PATTERN = re.compile(r"^[0-9a-f]{12}$")
+NOTE_FILE_PATTERN = re.compile(r"^note-([0-9a-f]{12})\.md$")
+RESIZE_DIRECTIONS = ("n", "s", "w", "e", "nw", "ne", "sw", "se")
+FileSignature = tuple[int, int, int, int]
+
+
+def default_paths() -> tuple[Path, Path, Path, Path]:
+    """Return the content directory, state, lock, and control socket paths."""
+    home = Path.home()
+    state_dir = home / ".local" / "state" / "simple-sticky"
+    return (
+        home / "StickyNotes",
+        state_dir / "state.json",
+        state_dir / "app.lock",
+        state_dir / "control.sock",
+    )
+
+
+def fsync_directory(path: Path) -> None:
+    """Sync a directory entry after an atomic replace or move."""
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def file_signature(stat_result: os.stat_result) -> FileSignature:
+    """Identify one exact filesystem snapshot without hashing its contents."""
+    return (
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+    )
+
+
+def atomic_write_text(
+    path: Path, text: str, mode: int = 0o600
+) -> FileSignature:
+    """Atomically replace UTF-8 text and return the written file snapshot."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing_mode: Optional[int] = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        existing_mode = None
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=str(path.parent)
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        os.fchmod(fd, existing_mode if existing_mode is not None else mode)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+            written_signature = file_signature(os.fstat(stream.fileno()))
+        os.replace(temporary_path, path)
+        fsync_directory(path.parent)
+        return written_signature
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def read_utf8(path: Path) -> str:
+    """Read a UTF-8 text file without normalizing its contents."""
+    return read_utf8_snapshot(path)[0]
+
+
+def read_utf8_snapshot(path: Path) -> tuple[str, FileSignature]:
+    """Read text and its signature from the same open file descriptor."""
+    with path.open("r", encoding="utf-8", newline="") as stream:
+        text = stream.read()
+        signature = file_signature(os.fstat(stream.fileno()))
+    return text, signature
+
+
+def classify_disk_snapshot(
+    disk_text: str,
+    buffer_text: str,
+    disk_signature: FileSignature,
+    last_self_signature: Optional[FileSignature],
+) -> str:
+    """Classify a monitor reload as self, already-current, or external."""
+    if last_self_signature is not None and disk_signature == last_self_signature:
+        return "self"
+    if disk_text == buffer_text:
+        return "same"
+    return "external"
+
+
+def content_digest(text: str) -> str:
+    """Return a short digest used only in diagnostic log messages."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def clamp(value: int, lower: int, upper: int) -> int:
+    """Clamp an integer, tolerating a work area smaller than the constraint."""
+    if upper < lower:
+        return upper
+    return max(lower, min(value, upper))
+
+
+def normalize_geometry(
+    raw: Any, fallback: Optional[dict[str, int]] = None
+) -> dict[str, int]:
+    """Validate geometry without changing valid negative monitor coordinates."""
+    default = DEFAULT_GEOMETRY if fallback is None else fallback
+    if not isinstance(raw, dict):
+        return default.copy()
+    values: dict[str, int] = {}
+    for key in DEFAULT_GEOMETRY:
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return default.copy()
+        values[key] = value
+    if not (MIN_WIDTH <= values["width"] <= 16384):
+        return default.copy()
+    if not (MIN_HEIGHT <= values["height"] <= 16384):
+        return default.copy()
+    if abs(values["x"]) > 131072 or abs(values["y"]) > 131072:
+        return default.copy()
+    return values
+
+
+def note_filename(note_id: str) -> str:
+    """Map a stable note ID to its human-readable Markdown filename."""
+    if note_id == "primary":
+        return "note.md"
+    if not NOTE_ID_PATTERN.fullmatch(note_id):
+        raise ValueError(f"Invalid note ID: {note_id}")
+    return f"note-{note_id}.md"
+
+
+def short_note_reference(note_id: str) -> str:
+    """Return a stable, compact reference suitable for the hover UI."""
+    note_filename(note_id)
+    if note_id == "primary":
+        return "#MAIN"
+    return f"#{note_id[:6].upper()}"
+
+
+def note_reference_title(text: str, limit: int = 48) -> str:
+    """Derive a compact human title from the first non-empty content line."""
+    for line in text.splitlines():
+        title = " ".join(line.split())
+        if not title:
+            continue
+        if len(title) > limit:
+            return title[: limit - 1].rstrip() + "…"
+        return title
+    return "Untitled"
+
+
+def codex_reference_text(note_id: str, note_path: Path, text: str) -> str:
+    """Build the exact, paste-ready reference copied from one note."""
+    title = json.dumps(note_reference_title(text), ensure_ascii=False)
+    return (
+        f"Read StickyMD note {title} ({short_note_reference(note_id)}).\n"
+        f"File: {note_path}\n"
+    )
+
+
+def new_note_id(existing_ids: set[str]) -> str:
+    """Generate a compact stable ID that is not already registered."""
+    while True:
+        candidate = uuid.uuid4().hex[:12]
+        if candidate not in existing_ids:
+            return candidate
+
+
+def geometry_for_index(index: int) -> dict[str, int]:
+    """Return a deterministic cascade used for recovered unregistered files."""
+    geometry = DEFAULT_GEOMETRY.copy()
+    geometry["x"] += NEW_NOTE_OFFSET * index
+    geometry["y"] += NEW_NOTE_OFFSET * index
+    return geometry
+
+
+def serialize_registry(
+    records: dict[str, dict[str, Any]], order: list[str]
+) -> str:
+    """Serialize the versioned multi-note state registry."""
+    notes: dict[str, dict[str, Any]] = {}
+    for note_id in order:
+        if note_id not in records:
+            continue
+        record = records[note_id]
+        notes[note_id] = {
+            "file": record["file"],
+            "x": record["x"],
+            "y": record["y"],
+            "width": record["width"],
+            "height": record["height"],
+        }
+    return json.dumps(
+        {"version": STATE_VERSION, "notes": notes, "order": list(notes)}, indent=2
+    ) + "\n"
+
+
+def load_registry(
+    state_path: Path, note_dir: Path, create_if_fresh: bool = True
+) -> tuple[dict[str, dict[str, Any]], list[str], bool]:
+    """Load v2 state or safely migrate the legacy single-note geometry."""
+    note_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        state_text = read_utf8(state_path)
+        raw: Any = json.loads(state_text)
+    except FileNotFoundError:
+        state_text = ""
+        raw = None
+    except (json.JSONDecodeError, OSError, UnicodeError):
+        state_text = ""
+        raw = None
+    is_v2 = (
+        isinstance(raw, dict)
+        and raw.get("version") == STATE_VERSION
+        and isinstance(raw.get("notes"), dict)
+    )
+    records: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    changed = not is_v2
+    if is_v2:
+        raw_notes = raw["notes"]
+        raw_order = raw.get("order", [])
+        candidate_order = raw_order if isinstance(raw_order, list) else []
+        candidate_order = [item for item in candidate_order if isinstance(item, str)]
+        for note_id in list(candidate_order) + list(raw_notes):
+            if note_id in records:
+                continue
+            data = raw_notes.get(note_id)
+            if not isinstance(data, dict):
+                changed = True
+                continue
+            try:
+                expected_file = note_filename(note_id)
+            except ValueError:
+                changed = True
+                continue
+            if data.get("file") != expected_file:
+                changed = True
+                continue
+            path = note_dir / expected_file
+            if not path.is_file():
+                changed = True
+                continue
+            geometry = normalize_geometry(data)
+            if any(geometry[key] != data.get(key) for key in DEFAULT_GEOMETRY):
+                changed = True
+            records[note_id] = {"file": expected_file, **geometry}
+            order.append(note_id)
+    else:
+        legacy_geometry = normalize_geometry(raw)
+        legacy_note = note_dir / "note.md"
+        if legacy_note.is_file():
+            records["primary"] = {"file": "note.md", **legacy_geometry}
+            order.append("primary")
+        if state_text and state_path.exists():
+            backup_path = state_path.with_name("state.v1.json.bak")
+            if not backup_path.exists():
+                atomic_write_text(backup_path, state_text)
+
+    # Restored or orphaned Markdown files are enrolled without changing content.
+    primary_path = note_dir / "note.md"
+    if primary_path.is_file() and "primary" not in records:
+        records["primary"] = {"file": "note.md", **geometry_for_index(len(order))}
+        order.append("primary")
+        changed = True
+    for path in sorted(note_dir.glob("note-*.md")):
+        match = NOTE_FILE_PATTERN.fullmatch(path.name)
+        if match is None:
+            continue
+        note_id = match.group(1)
+        if note_id in records:
+            continue
+        records[note_id] = {"file": path.name, **geometry_for_index(len(order))}
+        order.append(note_id)
+        changed = True
+    if not records and not is_v2 and create_if_fresh:
+        atomic_write_text(primary_path, "")
+        records["primary"] = {"file": "note.md", **DEFAULT_GEOMETRY}
+        order.append("primary")
+        changed = True
+    return records, order, changed
+
+
+def save_registry(
+    state_path: Path, records: dict[str, dict[str, Any]], order: list[str]
+) -> None:
+    """Atomically persist every note's geometry and stable ID mapping."""
+    atomic_write_text(state_path, serialize_registry(records, order))
+
+
+def clamp_new_geometry(
+    geometry: dict[str, int], workarea: tuple[int, int, int, int]
+) -> dict[str, int]:
+    """Keep a newly created note fully inside its monitor work area."""
+    wx, wy, ww, wh = workarea
+    width = min(geometry["width"], max(MIN_WIDTH, ww))
+    height = min(geometry["height"], max(MIN_HEIGHT, wh))
+    return {
+        "x": clamp(geometry["x"], wx, wx + ww - width),
+        "y": clamp(geometry["y"], wy, wy + wh - height),
+        "width": width,
+        "height": height,
+    }
+
+
+def clamp_moved_geometry(
+    geometry: dict[str, int], workarea: tuple[int, int, int, int]
+) -> dict[str, int]:
+    """Keep enough of a moved note visible to recover it with the pointer."""
+    wx, wy, ww, wh = workarea
+    width = geometry["width"]
+    return {
+        **geometry,
+        "x": clamp(
+            geometry["x"], wx - width + VISIBLE_MARGIN, wx + ww - VISIBLE_MARGIN
+        ),
+        "y": clamp(geometry["y"], wy, wy + wh - TOP_BAR_HEIGHT),
+    }
+
+
+def compute_resize_geometry(
+    direction: str,
+    start_geometry: dict[str, int],
+    delta_x: int,
+    delta_y: int,
+    workarea: tuple[int, int, int, int],
+) -> dict[str, int]:
+    """Resize from a fixed snapshot so opposite edges never drift."""
+    if direction not in RESIZE_DIRECTIONS:
+        raise ValueError(f"Invalid resize direction: {direction}")
+    wx, wy, ww, wh = workarea
+    work_right = wx + ww
+    work_bottom = wy + wh
+    left = start_geometry["x"]
+    top = start_geometry["y"]
+    right = left + start_geometry["width"]
+    bottom = top + start_geometry["height"]
+    if "w" in direction:
+        left = clamp(left + delta_x, wx, right - MIN_WIDTH)
+    elif "e" in direction:
+        right = clamp(right + delta_x, left + MIN_WIDTH, work_right)
+    if "n" in direction:
+        top = clamp(top + delta_y, wy, bottom - MIN_HEIGHT)
+    elif "s" in direction:
+        bottom = clamp(bottom + delta_y, top + MIN_HEIGHT, work_bottom)
+    return {
+        "x": left,
+        "y": top,
+        "width": right - left,
+        "height": bottom - top,
+    }
+
+
+def trash_note_file(
+    path: Path, fallback_dir: Path, try_system_trash: bool = True
+) -> str:
+    """Move a note to system Trash or an app-local recoverable directory."""
+    if not path.exists():
+        return "already-missing"
+    if try_system_trash:
+        try:
+            if Gio.File.new_for_path(str(path)).trash(None):
+                return "system-trash"
+        except GLib.Error as error:
+            logging.warning("System Trash rejected %s: %s", path, error.message)
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    target = fallback_dir / f"{timestamp}-{uuid.uuid4().hex[:8]}-{path.name}"
+    os.replace(path, target)
+    fsync_directory(path.parent)
+    fsync_directory(fallback_dir)
+    return str(target)
+
+
+class InstanceLock:
+    """Hold an advisory lock for the lifetime of the application."""
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            self._stream.close()
+            raise RuntimeError("StickyMD is already running") from error
+        self._stream.seek(0)
+        self._stream.truncate()
+        self._stream.write(f"{os.getpid()}\n")
+        self._stream.flush()
+
+
+class StickyWindow:
+    """One independently persisted desktop-layer note window."""
+
+    _css_installed = False
+
+    def __init__(
+        self,
+        manager: "StickyApplication",
+        note_id: str,
+        note_path: Path,
+        geometry: dict[str, int],
+    ) -> None:
+        self.manager = manager
+        self.note_id = note_id
+        self.note_path = note_path
+        self._save_source = 0
+        self._reload_source = 0
+        self._applying_disk_content = False
+        self._local_dirty = False
+        self._closing = False
+        self._deleting = False
+        self._copy_feedback_source = 0
+        self._drag: Optional[dict[str, Any]] = None
+        self._resize: Optional[dict[str, Any]] = None
+        disk_text, _disk_signature = read_utf8_snapshot(self.note_path)
+        self._last_disk_text = disk_text
+        self._last_self_signature: Optional[FileSignature] = None
+
+        self.window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        self.window.set_title(f"StickyMD [{self.note_id}]")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            self.window.set_wmclass("stickymd", "StickyMD")
+        self.window.set_role(f"desktop-sticky-note-{self.note_id}")
+        self.window.set_decorated(False)
+        self.window.set_deletable(False)
+        self.window.set_resizable(True)
+        self.window.set_focus_on_map(False)
+        self.window.set_accept_focus(True)
+        self.window.set_skip_taskbar_hint(True)
+        self.window.set_skip_pager_hint(True)
+        self.window.set_keep_below(True)
+        self.window.set_type_hint(Gdk.WindowTypeHint.DESKTOP)
+        self.window.set_default_size(geometry["width"], geometry["height"])
+        self.window.resize(geometry["width"], geometry["height"])
+        self.window.move(geometry["x"], geometry["y"])
+        self.window.stick()
+        hints = Gdk.Geometry()
+        hints.min_width = MIN_WIDTH
+        hints.min_height = MIN_HEIGHT
+        self.window.set_geometry_hints(None, hints, Gdk.WindowHints.MIN_SIZE)
+
+        self.text_view = Gtk.TextView()
+        self.text_view.set_name("sticky-editor")
+        self.text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.text_view.set_left_margin(13)
+        self.text_view.set_right_margin(13)
+        self.text_view.set_top_margin(9)
+        self.text_view.set_bottom_margin(13)
+        self.text_view.set_pixels_above_lines(1)
+        self.text_view.set_pixels_below_lines(1)
+        self.text_view.get_buffer().set_text(disk_text)
+        self.text_view.get_buffer().connect("changed", self._on_buffer_changed)
+        self.text_view.connect("button-press-event", self._on_editor_press)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_shadow_type(Gtk.ShadowType.NONE)
+        scroller.set_hexpand(True)
+        scroller.set_vexpand(True)
+        scroller.add(self.text_view)
+
+        self.drag_strip = Gtk.EventBox()
+        self.drag_strip.set_name("drag-strip")
+        self.drag_strip.set_visible_window(True)
+        self.drag_strip.set_hexpand(True)
+        self.drag_strip.set_size_request(-1, TOP_BAR_HEIGHT)
+        self._enable_pointer_events(self.drag_strip)
+        self.drag_strip.connect("button-press-event", self._on_move_press)
+        self.drag_strip.connect("motion-notify-event", self._on_move_motion)
+        self.drag_strip.connect("button-release-event", self._on_move_release)
+        self.drag_strip.connect("realize", self._set_move_cursor)
+
+        self.reference_label = Gtk.Label.new(short_note_reference(self.note_id))
+        self.reference_label.set_name("note-reference")
+        self.reference_label.set_tooltip_text("Stable reference for this note")
+        self.copy_button = self._make_icon_control_button(
+            "edit-copy-symbolic", "Copy a reference for Codex"
+        )
+        self.copy_button.get_accessible().set_name("Copy Codex reference")
+        self.add_button = self._make_control_button("+", "Create a new note")
+        self.delete_button = self._make_control_button("×", "Move this note to Trash")
+        self.copy_button.connect("clicked", self._on_copy_clicked)
+        self.add_button.connect("clicked", self._on_add_clicked)
+        self.delete_button.connect("clicked", self._on_delete_clicked)
+        self.controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=1)
+        self.controls.set_name("hover-controls")
+        self.controls.pack_start(self.reference_label, False, False, 2)
+        self.controls.pack_start(self.copy_button, False, False, 0)
+        self.controls.pack_start(self.add_button, False, False, 0)
+        self.controls.pack_start(self.delete_button, False, False, 0)
+        self.controls.set_opacity(0.0)
+        self.controls.set_sensitive(False)
+        top_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        top_bar.set_name("top-bar")
+        top_bar.pack_start(self.drag_strip, True, True, 0)
+        top_bar.pack_end(self.controls, False, False, 1)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        content.set_name("sticky-content")
+        content.pack_start(top_bar, False, False, 0)
+        content.pack_start(scroller, True, True, 0)
+
+        grid = Gtk.Grid()
+        grid.set_row_spacing(0)
+        grid.set_column_spacing(0)
+        grid.attach(self._resize_hit("nw"), 0, 0, 1, 1)
+        grid.attach(self._resize_hit("n"), 1, 0, 1, 1)
+        grid.attach(self._resize_hit("ne"), 2, 0, 1, 1)
+        grid.attach(self._resize_hit("w"), 0, 1, 1, 1)
+        grid.attach(content, 1, 1, 1, 1)
+        grid.attach(self._resize_hit("e"), 2, 1, 1, 1)
+        grid.attach(self._resize_hit("sw"), 0, 2, 1, 1)
+        grid.attach(self._resize_hit("s"), 1, 2, 1, 1)
+        grid.attach(self._resize_hit("se"), 2, 2, 1, 1)
+        frame = Gtk.EventBox()
+        frame.set_name("sticky-frame")
+        frame.set_visible_window(True)
+        frame.add(grid)
+        self.window.add(frame)
+
+        self._install_css()
+        self.window.add_events(
+            Gdk.EventMask.ENTER_NOTIFY_MASK
+            | Gdk.EventMask.LEAVE_NOTIFY_MASK
+            | Gdk.EventMask.BUTTON_PRESS_MASK
+        )
+        self.window.connect("enter-notify-event", self._on_enter)
+        self.window.connect("leave-notify-event", self._on_leave)
+        self.window.connect("button-press-event", self._on_window_press)
+        self.window.connect("key-press-event", self._on_key_press)
+        self.window.connect("realize", self._on_realize)
+        self.window.connect("configure-event", self._on_configure)
+        self.window.connect("delete-event", self._on_delete_event)
+        self._monitor: Optional[Gio.FileMonitor] = None
+        self._start_monitor()
+
+    @staticmethod
+    def _enable_pointer_events(widget: Gtk.Widget) -> None:
+        widget.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.POINTER_MOTION_MASK
+            | Gdk.EventMask.ENTER_NOTIFY_MASK
+        )
+
+    def _make_control_button(self, label: str, tooltip: str) -> Gtk.Button:
+        button = Gtk.Button.new_with_label(label)
+        self._configure_control_button(button, tooltip)
+        return button
+
+    def _make_icon_control_button(self, icon: str, tooltip: str) -> Gtk.Button:
+        button = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.MENU)
+        button.set_always_show_image(True)
+        self._configure_control_button(button, tooltip)
+        return button
+
+    @staticmethod
+    def _configure_control_button(button: Gtk.Button, tooltip: str) -> None:
+        button.set_name("note-control")
+        button.set_tooltip_text(tooltip)
+        button.set_relief(Gtk.ReliefStyle.NONE)
+        button.set_focus_on_click(False)
+        button.set_can_focus(False)
+        button.set_size_request(22, 22)
+
+    def _resize_hit(self, direction: str) -> Gtk.EventBox:
+        hit = Gtk.EventBox()
+        hit.set_name("resize-hit")
+        hit.set_visible_window(True)
+        hit.set_size_request(RESIZE_BORDER, RESIZE_BORDER)
+        hit.set_hexpand(direction in {"n", "s"})
+        hit.set_vexpand(direction in {"w", "e"})
+        self._enable_pointer_events(hit)
+        hit.connect("button-press-event", self._on_resize_press, direction)
+        hit.connect("motion-notify-event", self._on_resize_motion, direction)
+        hit.connect("button-release-event", self._on_resize_release, direction)
+        hit.connect("realize", self._set_resize_cursor, direction)
+        return hit
+
+    @classmethod
+    def _install_css(cls) -> None:
+        if cls._css_installed:
+            return
+        provider = Gtk.CssProvider()
+        provider.load_from_data(
+            b"""
+            #sticky-frame, #sticky-content, #top-bar, #drag-strip,
+            #hover-controls, #resize-hit { background-color: #ffffff; }
+            #sticky-frame { border: 1px solid #d6d6d6; }
+            #sticky-editor, #sticky-editor text {
+                background-color: #ffffff; color: #000000;
+                font-family: Sans; font-size: 14px; font-weight: normal;
+            }
+            #note-control {
+                min-width: 20px; min-height: 20px; padding: 0; border: 0;
+                border-radius: 0; color: #333333; background: #ffffff;
+                box-shadow: none;
+            }
+            #note-control:hover { background: #eeeeee; }
+            #note-reference {
+                color: #666666; background: #ffffff;
+                font-family: Sans; font-size: 10px; font-weight: normal;
+                padding: 0 2px;
+            }
+            """
+        )
+        screen = Gdk.Screen.get_default()
+        if screen is not None:
+            Gtk.StyleContext.add_provider_for_screen(
+                screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+            cls._css_installed = True
+
+    def show(self, focus: bool = False) -> None:
+        """Map the desktop window, optionally focusing after explicit creation."""
+        self.window.show_all()
+        self.controls.set_opacity(0.0)
+        self.controls.set_sensitive(False)
+        logging.info(
+            "Mapped note id=%s file=%s content=%s bytes=%d",
+            self.note_id,
+            self.note_path.name,
+            content_digest(self._last_disk_text),
+            len(self._last_disk_text.encode("utf-8")),
+        )
+        if focus:
+            GLib.idle_add(self.focus_editor)
+        else:
+            GLib.idle_add(self._lower_after_map)
+
+    def _lower_after_map(self) -> bool:
+        """Match the v1 no-focus mapping path for restored/login notes."""
+        if self._closing:
+            return GLib.SOURCE_REMOVE
+        gdk_window = self.window.get_window()
+        if gdk_window is not None:
+            gdk_window.lower()
+        self.window.set_urgency_hint(False)
+        return GLib.SOURCE_REMOVE
+
+    def focus_editor(self) -> bool:
+        """Focus a newly created note following an explicit user request."""
+        if self._closing:
+            return GLib.SOURCE_REMOVE
+        self.manager.bring_to_front(self.note_id)
+        self.text_view.grab_focus()
+        gdk_window = self.window.get_window()
+        if gdk_window is not None:
+            timestamp = GdkX11.x11_get_server_time(gdk_window)
+            GdkX11.X11Window.set_user_time(gdk_window, timestamp)
+            gdk_window.focus(timestamp)
+        return GLib.SOURCE_REMOVE
+
+    def geometry(self) -> dict[str, int]:
+        x, y = self.window.get_position()
+        width, height = self.window.get_size()
+        return {"x": x, "y": y, "width": width, "height": height}
+
+    def _on_realize(self, _window: Gtk.Window) -> None:
+        gdk_window = self.window.get_window()
+        if gdk_window is not None:
+            GdkX11.X11Window.set_user_time(gdk_window, 0)
+            gdk_window.set_type_hint(Gdk.WindowTypeHint.DESKTOP)
+            gdk_window.set_keep_below(True)
+            gdk_window.set_skip_taskbar_hint(True)
+            gdk_window.set_skip_pager_hint(True)
+            gdk_window.stick()
+
+    def _set_move_cursor(self, widget: Gtk.Widget) -> None:
+        window = widget.get_window()
+        if window is not None:
+            window.set_cursor(Gdk.Cursor.new_from_name(window.get_display(), "move"))
+
+    def _set_resize_cursor(self, widget: Gtk.Widget, direction: str) -> None:
+        window = widget.get_window()
+        if window is not None:
+            window.set_cursor(
+                Gdk.Cursor.new_from_name(window.get_display(), f"{direction}-resize")
+            )
+
+    def _set_controls_visible(self, visible: bool) -> None:
+        self.controls.set_opacity(1.0 if visible else 0.0)
+        self.controls.set_sensitive(visible)
+
+    def _on_enter(self, _widget: Gtk.Widget, _event: Gdk.EventCrossing) -> bool:
+        self._set_controls_visible(True)
+        return False
+
+    def _on_leave(self, _widget: Gtk.Widget, event: Gdk.EventCrossing) -> bool:
+        if event.detail != Gdk.NotifyType.INFERIOR:
+            self._set_controls_visible(False)
+        return False
+
+    def _on_window_press(self, _widget: Gtk.Widget, _event: Gdk.EventButton) -> bool:
+        self.manager.bring_to_front(self.note_id)
+        return False
+
+    def _on_editor_press(self, _widget: Gtk.Widget, _event: Gdk.EventButton) -> bool:
+        self.manager.bring_to_front(self.note_id)
+        return False
+
+    def _on_key_press(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
+        if (
+            event.state & Gdk.ModifierType.CONTROL_MASK
+            and Gdk.keyval_to_lower(event.keyval) == Gdk.KEY_n
+        ):
+            self.manager.create_note(source=self, focus=True)
+            return True
+        return False
+
+    def _on_add_clicked(self, _button: Gtk.Button) -> None:
+        self.manager.create_note(source=self, focus=True)
+
+    def _on_copy_clicked(self, _button: Gtk.Button) -> None:
+        self.flush_content()
+        reference = codex_reference_text(
+            self.note_id, self.note_path, self._buffer_text()
+        )
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        clipboard.set_text(reference, -1)
+        clipboard.store()
+        self.copy_button.set_image(
+            Gtk.Image.new_from_icon_name("object-select-symbolic", Gtk.IconSize.MENU)
+        )
+        self.copy_button.set_tooltip_text("Reference copied")
+        if self._copy_feedback_source:
+            GLib.source_remove(self._copy_feedback_source)
+        self._copy_feedback_source = GLib.timeout_add(
+            1200, self._restore_copy_feedback
+        )
+
+    def _restore_copy_feedback(self) -> bool:
+        self._copy_feedback_source = 0
+        if self._closing:
+            return GLib.SOURCE_REMOVE
+        self.copy_button.set_image(
+            Gtk.Image.new_from_icon_name("edit-copy-symbolic", Gtk.IconSize.MENU)
+        )
+        self.copy_button.set_tooltip_text("Copy a reference for Codex")
+        return GLib.SOURCE_REMOVE
+
+    def _cancel_copy_feedback(self) -> None:
+        if self._copy_feedback_source:
+            GLib.source_remove(self._copy_feedback_source)
+            self._copy_feedback_source = 0
+
+    def _on_delete_clicked(self, _button: Gtk.Button) -> None:
+        self.manager.delete_note(self.note_id)
+
+    def _on_move_press(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
+        if event.button != Gdk.BUTTON_PRIMARY:
+            return False
+        self.manager.bring_to_front(self.note_id)
+        geometry = self.geometry()
+        self._drag = {
+            "root_x": event.x_root,
+            "root_y": event.y_root,
+            "geometry": geometry,
+            "workarea": self.manager.workarea_for_geometry(geometry),
+        }
+        return True
+
+    def _on_move_motion(self, _widget: Gtk.Widget, event: Gdk.EventMotion) -> bool:
+        if self._drag is None:
+            return False
+        start = self._drag["geometry"]
+        candidate = {
+            **start,
+            "x": start["x"] + round(event.x_root - self._drag["root_x"]),
+            "y": start["y"] + round(event.y_root - self._drag["root_y"]),
+        }
+        moved = clamp_moved_geometry(candidate, self._drag["workarea"])
+        self.window.move(moved["x"], moved["y"])
+        return True
+
+    def _on_move_release(
+        self, _widget: Gtk.Widget, event: Gdk.EventButton
+    ) -> bool:
+        if event.button != Gdk.BUTTON_PRIMARY or self._drag is None:
+            return False
+        self._drag = None
+        self.manager.update_geometry(self.note_id, self.geometry())
+        return True
+
+    def _on_resize_press(
+        self, _widget: Gtk.Widget, event: Gdk.EventButton, direction: str
+    ) -> bool:
+        if event.button != Gdk.BUTTON_PRIMARY:
+            return False
+        self.manager.bring_to_front(self.note_id)
+        geometry = self.geometry()
+        self._resize = {
+            "direction": direction,
+            "root_x": event.x_root,
+            "root_y": event.y_root,
+            "geometry": geometry,
+            "workarea": self.manager.workarea_for_geometry(geometry),
+        }
+        return True
+
+    def _resize_at_pointer(self, event: Any) -> None:
+        if self._resize is None:
+            return
+        resized = compute_resize_geometry(
+            self._resize["direction"],
+            self._resize["geometry"],
+            round(event.x_root - self._resize["root_x"]),
+            round(event.y_root - self._resize["root_y"]),
+            self._resize["workarea"],
+        )
+        gdk_window = self.window.get_window()
+        if gdk_window is not None:
+            gdk_window.move_resize(
+                resized["x"], resized["y"], resized["width"], resized["height"]
+            )
+
+    def _on_resize_motion(
+        self, _widget: Gtk.Widget, event: Gdk.EventMotion, _direction: str
+    ) -> bool:
+        if self._resize is None:
+            return False
+        self._resize_at_pointer(event)
+        return True
+
+    def _on_resize_release(
+        self, _widget: Gtk.Widget, event: Gdk.EventButton, _direction: str
+    ) -> bool:
+        if event.button != Gdk.BUTTON_PRIMARY or self._resize is None:
+            return False
+        self._resize_at_pointer(event)
+        self._resize = None
+        self.manager.update_geometry(self.note_id, self.geometry())
+        return True
+
+    def _buffer_text(self) -> str:
+        buffer = self.text_view.get_buffer()
+        return buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+
+    def _on_buffer_changed(self, _buffer: Gtk.TextBuffer) -> None:
+        if self._applying_disk_content:
+            return
+        self._local_dirty = True
+        if self._save_source:
+            GLib.source_remove(self._save_source)
+        self._save_source = GLib.timeout_add(SAVE_DELAY_MS, self._save_note)
+
+    def _save_note(self) -> bool:
+        self._save_source = 0
+        text = self._buffer_text()
+        try:
+            written_signature = atomic_write_text(self.note_path, text)
+        except OSError:
+            logging.exception("Could not save %s", self.note_path)
+            if not self._closing:
+                self._save_source = GLib.timeout_add(SAVE_DELAY_MS, self._save_note)
+            return GLib.SOURCE_REMOVE
+        self._last_disk_text = text
+        self._last_self_signature = written_signature
+        self._local_dirty = False
+        logging.info(
+            "Saved note id=%s content=%s bytes=%d",
+            self.note_id,
+            content_digest(text),
+            len(text.encode("utf-8")),
+        )
+        return GLib.SOURCE_REMOVE
+
+    def flush_content(self) -> None:
+        """Synchronously finish a pending note save before shutdown or deletion."""
+        if self._save_source:
+            GLib.source_remove(self._save_source)
+            self._save_source = 0
+        if self._local_dirty:
+            self._save_note()
+
+    def _on_directory_changed(
+        self,
+        _monitor: Gio.FileMonitor,
+        file: Gio.File,
+        other_file: Optional[Gio.File],
+        _event_type: Gio.FileMonitorEvent,
+    ) -> None:
+        if self._deleting or self._closing:
+            return
+        names = {file.get_basename()}
+        if other_file is not None:
+            names.add(other_file.get_basename())
+        if self.note_path.name not in names:
+            return
+        if self._reload_source:
+            GLib.source_remove(self._reload_source)
+        self._reload_source = GLib.timeout_add(RELOAD_DELAY_MS, self._reload_from_disk)
+
+    def _start_monitor(self) -> None:
+        monitored_directory = Gio.File.new_for_path(str(self.note_path.parent))
+        self._monitor = monitored_directory.monitor_directory(
+            Gio.FileMonitorFlags.WATCH_MOVES, None
+        )
+        self._monitor.connect("changed", self._on_directory_changed)
+
+    def _reload_from_disk(self) -> bool:
+        self._reload_source = 0
+        if self._deleting or self._closing:
+            return GLib.SOURCE_REMOVE
+        try:
+            disk_text, disk_signature = read_utf8_snapshot(self.note_path)
+        except FileNotFoundError:
+            self._reload_source = GLib.timeout_add(
+                RELOAD_DELAY_MS, self._recreate_missing_note
+            )
+            return GLib.SOURCE_REMOVE
+        except (OSError, UnicodeError):
+            logging.exception("Could not reload %s", self.note_path)
+            return GLib.SOURCE_REMOVE
+        classification = classify_disk_snapshot(
+            disk_text,
+            self._buffer_text(),
+            disk_signature,
+            self._last_self_signature,
+        )
+        if classification == "self":
+            self._last_disk_text = disk_text
+            return GLib.SOURCE_REMOVE
+        if classification == "same":
+            if self._save_source:
+                GLib.source_remove(self._save_source)
+                self._save_source = 0
+            self._last_disk_text = disk_text
+            self._last_self_signature = None
+            self._local_dirty = False
+            return GLib.SOURCE_REMOVE
+        if self._save_source:
+            GLib.source_remove(self._save_source)
+            self._save_source = 0
+        self._applying_disk_content = True
+        try:
+            self.text_view.get_buffer().set_text(disk_text)
+        finally:
+            self._applying_disk_content = False
+        self._last_disk_text = disk_text
+        self._last_self_signature = None
+        self._local_dirty = False
+        logging.info(
+            "Reloaded note id=%s content=%s bytes=%d",
+            self.note_id,
+            content_digest(disk_text),
+            len(disk_text.encode("utf-8")),
+        )
+        return GLib.SOURCE_REMOVE
+
+    def _recreate_missing_note(self) -> bool:
+        self._reload_source = 0
+        if self._deleting or self._closing:
+            return GLib.SOURCE_REMOVE
+        if self.note_path.exists():
+            return self._reload_from_disk()
+        try:
+            text = self._buffer_text()
+            self._last_self_signature = atomic_write_text(self.note_path, text)
+            self._last_disk_text = text
+        except OSError:
+            logging.exception("Could not recreate %s", self.note_path)
+        return GLib.SOURCE_REMOVE
+
+    def _on_configure(
+        self, _window: Gtk.Window, _event: Gdk.EventConfigure
+    ) -> bool:
+        if not self._closing:
+            self.manager.update_geometry(self.note_id, self.geometry())
+        return False
+
+    def _on_delete_event(self, _window: Gtk.Window, _event: Gdk.Event) -> bool:
+        return True
+
+    def prepare_delete(self) -> None:
+        """Stop monitoring before the Markdown file leaves its directory."""
+        self._deleting = True
+        self.flush_content()
+        if self._reload_source:
+            GLib.source_remove(self._reload_source)
+            self._reload_source = 0
+        if self._monitor is not None:
+            self._monitor.cancel()
+            self._monitor = None
+
+    def resume_after_failed_delete(self) -> None:
+        self._deleting = False
+        self._start_monitor()
+
+    def destroy(self) -> None:
+        self._cancel_copy_feedback()
+        self._closing = True
+        self.window.destroy()
+
+    def shutdown(self) -> None:
+        """Flush this note and stop its monitor without deleting content."""
+        if self._closing:
+            return
+        self.flush_content()
+        self.manager.capture_geometry(self.note_id, self.geometry())
+        self._cancel_copy_feedback()
+        self._closing = True
+        if self._reload_source:
+            GLib.source_remove(self._reload_source)
+            self._reload_source = 0
+        if self._monitor is not None:
+            self._monitor.cancel()
+            self._monitor = None
+        self.window.destroy()
+
+
+class StickyApplication:
+    """Own all note windows and the single atomic state registry."""
+
+    def __init__(
+        self, note_dir: Path, state_path: Path, create_if_fresh: bool = True
+    ) -> None:
+        self.note_dir = note_dir
+        self.state_path = state_path
+        self.fallback_trash = note_dir / ".trash"
+        self._state_source = 0
+        self._closing = False
+        self.control_server: Optional[ControlServer] = None
+        self.records, self.order, changed = load_registry(
+            state_path, note_dir, create_if_fresh=create_if_fresh
+        )
+        self.windows: dict[str, StickyWindow] = {}
+        if changed:
+            self._save_state_now()
+        for note_id in self.order:
+            record = self.records[note_id]
+            window = StickyWindow(
+                self, note_id, self.note_dir / record["file"], record
+            )
+            self.windows[note_id] = window
+            window.show(focus=False)
+
+    def workarea_for_geometry(
+        self, geometry: dict[str, int]
+    ) -> tuple[int, int, int, int]:
+        display = Gdk.Display.get_default()
+        if display is None:
+            return (0, 0, 1920, 1080)
+        center_x = geometry["x"] + geometry["width"] // 2
+        center_y = geometry["y"] + geometry["height"] // 2
+        monitor = display.get_monitor_at_point(center_x, center_y)
+        if monitor is None:
+            monitor = display.get_primary_monitor()
+        if monitor is None:
+            return (0, 0, 1920, 1080)
+        area = monitor.get_workarea()
+        return (area.x, area.y, area.width, area.height)
+
+    def _default_workarea(self) -> tuple[int, int, int, int]:
+        display = Gdk.Display.get_default()
+        if display is None:
+            return (0, 0, 1920, 1080)
+        monitor = display.get_primary_monitor()
+        if monitor is None and display.get_n_monitors() > 0:
+            monitor = display.get_monitor(0)
+        if monitor is None:
+            return (0, 0, 1920, 1080)
+        area = monitor.get_workarea()
+        return (area.x, area.y, area.width, area.height)
+
+    def create_note(
+        self, source: Optional[StickyWindow] = None, focus: bool = True
+    ) -> str:
+        """Create a blank Markdown file and its independent note window."""
+        if source is None and self.order:
+            source = self.windows.get(self.order[-1])
+        if source is not None:
+            source_geometry = source.geometry()
+            workarea = self.workarea_for_geometry(source_geometry)
+            geometry = {
+                "x": source_geometry["x"] + NEW_NOTE_OFFSET,
+                "y": source_geometry["y"] + NEW_NOTE_OFFSET,
+                "width": 320,
+                "height": 320,
+            }
+        else:
+            workarea = self._default_workarea()
+            geometry = {
+                "x": workarea[0] + 48,
+                "y": workarea[1] + 48,
+                "width": 320,
+                "height": 320,
+            }
+        geometry = clamp_new_geometry(geometry, workarea)
+        primary_path = self.note_dir / "note.md"
+        if not self.records and not primary_path.exists():
+            note_id = "primary"
+        else:
+            note_id = new_note_id(set(self.records))
+        filename = note_filename(note_id)
+        path = self.note_dir / filename
+        atomic_write_text(path, "")
+        self.records[note_id] = {"file": filename, **geometry}
+        self.order.append(note_id)
+        self._save_state_now()
+        window = StickyWindow(self, note_id, path, geometry)
+        self.windows[note_id] = window
+        window.show(focus=focus)
+        self.bring_to_front(note_id)
+        logging.info("Created note id=%s file=%s", note_id, filename)
+        return note_id
+
+    def delete_note(self, note_id: str) -> bool:
+        """Recoverably delete one note without touching any other note."""
+        window = self.windows.get(note_id)
+        record = self.records.get(note_id)
+        if window is None or record is None:
+            return False
+        window.prepare_delete()
+        try:
+            destination = trash_note_file(
+                self.note_dir / record["file"], self.fallback_trash
+            )
+        except OSError:
+            window.resume_after_failed_delete()
+            logging.exception("Could not move note id=%s to recoverable Trash", note_id)
+            return False
+        window.destroy()
+        del self.windows[note_id]
+        del self.records[note_id]
+        self.order = [item for item in self.order if item != note_id]
+        self._save_state_now()
+        logging.info("Deleted note id=%s destination=%s", note_id, destination)
+        return True
+
+    def bring_to_front(self, note_id: str) -> None:
+        """Raise within Mutter's desktop layer and persist note-local ordering."""
+        window = self.windows.get(note_id)
+        if window is None:
+            return
+        gdk_window = window.window.get_window()
+        if gdk_window is not None:
+            gdk_window.raise_()
+        window.window.set_urgency_hint(False)
+        new_order = [item for item in self.order if item != note_id] + [note_id]
+        if new_order != self.order:
+            self.order = new_order
+            self._schedule_state_save()
+
+    def capture_geometry(self, note_id: str, geometry: dict[str, int]) -> None:
+        if note_id in self.records:
+            self.records[note_id].update(normalize_geometry(geometry))
+
+    def update_geometry(self, note_id: str, geometry: dict[str, int]) -> None:
+        if self._closing or note_id not in self.records:
+            return
+        normalized = normalize_geometry(geometry)
+        if all(
+            self.records[note_id].get(key) == normalized[key]
+            for key in DEFAULT_GEOMETRY
+        ):
+            return
+        self.records[note_id].update(normalized)
+        self._schedule_state_save()
+
+    def _schedule_state_save(self) -> None:
+        if self._closing:
+            return
+        if self._state_source:
+            GLib.source_remove(self._state_source)
+        self._state_source = GLib.timeout_add(STATE_DELAY_MS, self._save_state_now)
+
+    def _save_state_now(self) -> bool:
+        if self._state_source:
+            GLib.source_remove(self._state_source)
+            self._state_source = 0
+        try:
+            save_registry(self.state_path, self.records, self.order)
+        except OSError:
+            logging.exception("Could not save %s", self.state_path)
+        return GLib.SOURCE_REMOVE
+
+    def shutdown(self) -> None:
+        """Flush every independent note and atomically save their registry."""
+        if self._closing:
+            return
+        self._closing = True
+        for window in list(self.windows.values()):
+            window.shutdown()
+        self._save_state_now()
+        if self.control_server is not None:
+            self.control_server.close()
+        Gtk.main_quit()
+
+
+class ControlServer:
+    """Receive local commands from secondary `stickymd` invocations."""
+
+    def __init__(self, path: Path, application: StickyApplication) -> None:
+        self.path = path
+        self.application = application
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.socket.setblocking(False)
+        self.socket.bind(str(self.path))
+        os.chmod(self.path, 0o600)
+        self.socket.listen(8)
+        self._watch = GLib.io_add_watch(
+            self.socket.fileno(), GLib.IO_IN | GLib.IO_HUP, self._on_ready
+        )
+
+    def _on_ready(self, _fd: int, condition: GLib.IOCondition) -> bool:
+        if condition & GLib.IO_HUP:
+            return True
+        try:
+            connection, _address = self.socket.accept()
+        except BlockingIOError:
+            return True
+        with connection:
+            command = connection.recv(128).decode("utf-8", errors="replace").strip()
+            response = self._handle_command(command)
+            connection.sendall(f"{response}\n".encode("ascii"))
+        return True
+
+    def _handle_command(self, command: str) -> str:
+        """Return one local control response without depending on socket I/O."""
+        if command == "new":
+            note_id = self.application.create_note(source=None, focus=True)
+            return f"OK {note_id}"
+        if command == "ensure":
+            if self.application.windows:
+                return f"OK running {len(self.application.windows)}"
+            note_id = self.application.create_note(source=None, focus=True)
+            return f"OK created {note_id}"
+        if command == "ping":
+            return "OK pong"
+        if command == "quit":
+            GLib.idle_add(self.application.shutdown)
+            return "OK quitting"
+        return "ERROR unknown-command"
+
+    def close(self) -> None:
+        if self._watch:
+            GLib.source_remove(self._watch)
+            self._watch = 0
+        self.socket.close()
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def gtk_init_ok() -> bool:
+    """Initialize GTK while handling both introspection return signatures."""
+    result = Gtk.init_check(None)
+    if isinstance(result, tuple):
+        return bool(result[0])
+    return bool(result)
+
+
+def send_control_command(path: Path, command: str, timeout: float = 1.0) -> str:
+    """Send one command to the running app and return its response."""
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(timeout)
+    try:
+        client.connect(str(path))
+        client.sendall(f"{command}\n".encode("ascii"))
+        return client.recv(256).decode("utf-8", errors="replace").strip()
+    finally:
+        client.close()
+
+
+def spawn_background(
+    control_path: Path, arguments: list[str], success_message: str
+) -> int:
+    """Start a detached app and wait until its local control socket is ready."""
+    executable = Path(sys.argv[0]).resolve()
+    log_path = control_path.with_name("stickymd.log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log_stream:
+        process = subprocess.Popen(
+            [str(executable), *arguments],
+            stdin=subprocess.DEVNULL,
+            stdout=log_stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
+    for _attempt in range(40):
+        if process.poll() is not None:
+            print(f"StickyMD failed to start; see {log_path}", file=sys.stderr)
+            return 4
+        if control_path.exists():
+            print(success_message)
+            return 0
+        time.sleep(0.05)
+    print(f"StickyMD startup timed out; see {log_path}", file=sys.stderr)
+    return 4
+
+
+def spawn_for_new(control_path: Path) -> int:
+    """Start a detached app and explicitly create one new note."""
+    return spawn_background(
+        control_path,
+        ["--new-on-start"],
+        "Started StickyMD and requested a new note.",
+    )
+
+
+def spawn_for_start(control_path: Path) -> int:
+    """Start a detached app and restore only the registered notes."""
+    return spawn_background(
+        control_path,
+        ["--autostart"],
+        "Started StickyMD and restored registered notes.",
+    )
+
+
+def print_diagnostics() -> int:
+    """Print support and dependency information without creating a window."""
+    note_dir, state_path, lock_path, control_path = default_paths()
+    note_count: Optional[int] = None
+    try:
+        raw = json.loads(read_utf8(state_path))
+        if isinstance(raw, dict) and isinstance(raw.get("notes"), dict):
+            note_count = len(raw["notes"])
+    except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeError):
+        pass
+    values = {
+        "version": VERSION,
+        "state_version": STATE_VERSION,
+        "xdg_current_desktop": os.environ.get("XDG_CURRENT_DESKTOP", ""),
+        "xdg_session_type": os.environ.get("XDG_SESSION_TYPE", ""),
+        "display": os.environ.get("DISPLAY", ""),
+        "gtk_version": (
+            f"{Gtk.get_major_version()}."
+            f"{Gtk.get_minor_version()}."
+            f"{Gtk.get_micro_version()}"
+        ),
+        "note_directory": str(note_dir),
+        "state_path": str(state_path),
+        "lock_path": str(lock_path),
+        "control_path": str(control_path),
+        "registered_notes": note_count,
+        "supported_session": os.environ.get("XDG_SESSION_TYPE", "").lower()
+        == "x11",
+    }
+    print(json.dumps(values, indent=2))
+    return 0 if values["supported_session"] else 1
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", nargs="?", choices=("new", "start", "quit"))
+    parser.add_argument(
+        "--autostart", action="store_true", help="mark a login-started invocation"
+    )
+    parser.add_argument(
+        "--diagnose", action="store_true", help="print environment diagnostics"
+    )
+    parser.add_argument("--new-on-start", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--version", action="version", version=VERSION)
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    note_dir, state_path, lock_path, control_path = default_paths()
+    if args.diagnose:
+        return print_diagnostics()
+    if args.command == "new":
+        try:
+            response = send_control_command(control_path, "new")
+        except (FileNotFoundError, ConnectionError, OSError, socket.timeout):
+            return spawn_for_new(control_path)
+        if response.startswith("OK "):
+            print(f"Created StickyMD note {response[3:]}")
+            return 0
+        print(response, file=sys.stderr)
+        return 4
+    if args.command == "start":
+        try:
+            response = send_control_command(control_path, "ping")
+        except (FileNotFoundError, ConnectionError, OSError, socket.timeout):
+            return spawn_for_start(control_path)
+        if response == "OK pong":
+            print("StickyMD is already running.")
+            return 0
+        print(response, file=sys.stderr)
+        return 4
+    if args.command == "quit":
+        try:
+            response = send_control_command(control_path, "quit")
+        except (FileNotFoundError, ConnectionError, OSError, socket.timeout):
+            print("StickyMD is not running.")
+            return 0
+        if response == "OK quitting":
+            print("StickyMD stopped; note files and state were preserved.")
+            return 0
+        print(response, file=sys.stderr)
+        return 4
+    if not args.autostart and not args.new_on_start:
+        try:
+            response = send_control_command(control_path, "ensure")
+        except (FileNotFoundError, ConnectionError, OSError, socket.timeout):
+            pass
+        else:
+            if response.startswith("OK created "):
+                print(f"Created StickyMD note {response[11:]}")
+                return 0
+            if response.startswith("OK running "):
+                count = response[11:]
+                print(
+                    f"StickyMD is running with {count} note(s). "
+                    "Use Show Desktop to see them, or run `stickymd new`."
+                )
+                return 0
+            print(response, file=sys.stderr)
+            return 4
+    if os.environ.get("XDG_SESSION_TYPE", "").lower() != "x11":
+        print(
+            "StickyMD supports the detected GNOME X11 implementation only; "
+            "it will not fall back to a normal window.",
+            file=sys.stderr,
+        )
+        return 2
+    if not gtk_init_ok():
+        print("Cannot connect to the active X11 display.", file=sys.stderr)
+        return 3
+    logging.basicConfig(level=logging.INFO, format="stickymd: %(levelname)s: %(message)s")
+    try:
+        instance_lock = InstanceLock(lock_path)
+    except RuntimeError as error:
+        logging.info("%s", error)
+        return 0
+    application = StickyApplication(
+        note_dir, state_path, create_if_fresh=not args.new_on_start
+    )
+    control_server = ControlServer(control_path, application)
+    application.control_server = control_server
+    if args.new_on_start or (not args.autostart and not application.windows):
+        def create_once() -> bool:
+            application.create_note(source=None, focus=True)
+            return GLib.SOURCE_REMOVE
+
+        GLib.idle_add(create_once)
+
+    def request_shutdown() -> bool:
+        application.shutdown()
+        return GLib.SOURCE_REMOVE
+
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, request_shutdown)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, request_shutdown)
+    Gtk.main()
+    del instance_lock
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,7 @@
+{
+  "uuid": "stickymd@local",
+  "name": "StickyMD Panel Button",
+  "description": "Create, stop, and restore StickyMD from the GNOME top panel.",
+  "shell-version": ["42"],
+  "version": 1
+}

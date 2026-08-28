@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=New Sticky Note
+Comment=Create a new StickyMD note
+Exec=@EXECUTABLE@ new
+Terminal=false
+NoDisplay=false
+StartupNotify=false
+Categories=Utility;

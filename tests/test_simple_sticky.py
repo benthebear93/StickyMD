@@ -198,15 +198,100 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(MODULE.note_reference_title(" \n\t"), "Untitled")
         self.assertEqual(MODULE.note_reference_title("abcdefgh", limit=6), "abcde…")
 
-    def test_codex_reference_contains_title_code_and_exact_plain_file_path(self):
+    def test_note_reference_contains_title_code_and_exact_plain_file_path(self):
         path = Path("/home/example/StickyNotes/note-012345abcdef.md")
         self.assertEqual(
-            MODULE.codex_reference_text(
+            MODULE.note_reference_text(
                 "012345abcdef", path, '장보기 "금요일"\n우유'
             ),
             'Read StickyMD note "장보기 \\"금요일\\"" (#012345).\n'
             "File: /home/example/StickyNotes/note-012345abcdef.md\n",
         )
+
+
+class LiveMarkdownTests(unittest.TestCase):
+    def test_parser_styles_only_titles_bold_and_checkboxes(self):
+        text = (
+            "# Main title\n"
+            "## Second title\n"
+            "### Third title\n"
+            "#### Plain fourth level\n"
+            "Use **bold text** here.\n"
+            "- [ ] open task\n"
+            "- [x] done task\n"
+            "- ordinary list\n"
+        )
+        spans = MODULE.parse_live_markdown(text)
+        by_kind = {kind: [] for kind in {
+            span.kind for span in spans
+        }}
+        for span in spans:
+            by_kind[span.kind].append(text[span.start:span.end])
+
+        self.assertEqual(by_kind["heading-1"], ["Main title"])
+        self.assertEqual(by_kind["heading-2"], ["Second title"])
+        self.assertEqual(by_kind["heading-3"], ["Third title"])
+        self.assertEqual(by_kind["bold"], ["bold text"])
+        self.assertEqual(by_kind["checkbox-unchecked"], ["[ ]"])
+        self.assertEqual(by_kind["checkbox-checked"], ["[x]"])
+        self.assertNotIn("heading-4", by_kind)
+
+    def test_parser_keeps_exact_source_ranges_for_unicode(self):
+        text = "# 제목\n한글 **굵게** 표시\n"
+        original = text
+        spans = MODULE.parse_live_markdown(text)
+        heading = next(span for span in spans if span.kind == "heading-1")
+        bold = next(span for span in spans if span.kind == "bold")
+
+        self.assertEqual(text[heading.start:heading.end], "제목")
+        self.assertEqual(text[bold.start:bold.end], "굵게")
+        self.assertEqual(
+            [text[start:end] for start, end in bold.syntax], ["**", "**"]
+        )
+        self.assertEqual(text, original)
+
+    def test_incomplete_markdown_remains_plain(self):
+        text = "#\n## \n**unfinished\n- [y] not a checkbox\n"
+        self.assertEqual(MODULE.parse_live_markdown(text), [])
+
+    def test_checkbox_hit_testing_is_limited_to_the_marker(self):
+        text = "- [ ] task"
+        spans = MODULE.parse_live_markdown(text)
+        checkbox = next(span for span in spans if span.kind.startswith("checkbox-"))
+
+        self.assertIs(
+            MODULE.checkbox_span_at_offset(spans, checkbox.start + 1), checkbox
+        )
+        self.assertIsNone(MODULE.checkbox_span_at_offset(spans, len(text) - 1))
+
+    def test_presentation_tags_do_not_emit_content_changes(self):
+        buffer = MODULE.Gtk.TextBuffer()
+        tags = MODULE.StickyWindow._create_markdown_tags(buffer)
+        buffer.set_text("# Heading\n**bold**\n- [ ] task")
+        change_count = 0
+
+        def on_changed(_buffer):
+            nonlocal change_count
+            change_count += 1
+
+        buffer.connect("changed", on_changed)
+        buffer.apply_tag(
+            tags["heading-1"],
+            buffer.get_iter_at_offset(2),
+            buffer.get_iter_at_offset(9),
+        )
+        buffer.apply_tag(
+            tags["syntax-hidden"],
+            buffer.get_iter_at_offset(0),
+            buffer.get_iter_at_offset(2),
+        )
+
+        self.assertEqual(change_count, 0)
+        self.assertEqual(
+            buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True),
+            "# Heading\n**bold**\n- [ ] task",
+        )
+        self.assertTrue(tags["syntax-hidden"].get_property("invisible"))
 
 
 class ResizeMathTests(unittest.TestCase):

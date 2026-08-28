@@ -1,22 +1,30 @@
 # StickyMD
 
-Native Markdown sticky notes for GNOME X11, readable and editable by Codex,
-Claude, and other coding agents.
+**Your LLM said something useful. Again.**
 
-StickyMD keeps notes above the wallpaper but behind regular application
-windows. Notes stay out of Alt+Tab, the Dock, and the taskbar. Each note is an
-ordinary Markdown file in `~/StickyNotes`, so people, terminals, editors, and
-coding agents can work with the same text.
+LLMs kept producing answers worth keeping, but saving every result as a
+Markdown file—and reopening an editor just to write a tiny summary—felt like
+homework. I wanted a place to skim the output, jot down only the useful bit,
+and get back to work.
+
+StickyMD is that in-between place: small notes above the wallpaper and below
+your real windows. Each note autosaves as a plain Markdown file, and one click
+copies an exact reference you can hand back to any LLM or coding agent later.
+
+> LLM output → skim → keep the useful bit → StickyMD → reference it later
+
+![StickyMD note with live headings, bold text, checkboxes, and hover controls](docs/images/stickymd-live-markdown.png)
 
 ## Features
 
 - Multiple independently saved notes
+- Live inline styling for `#` headings, `**bold**`, and task checkboxes
 - Automatic saving and live reload after external file edits
 - Position and size restoration across logins
 - Move and resize from every edge or corner
 - Login autostart and a small GNOME panel control for creating or stopping notes
 - Recoverable deletion through the system Trash
-- A hover action that copies the exact note path for Codex or Claude
+- A hover action that copies an exact, agent-neutral note reference
 
 ## Requirements
 
@@ -68,6 +76,12 @@ To update, run `./install.sh` again and restart the running process:
 - Drag the empty top strip to move a note.
 - Drag any edge or corner to resize it.
 - Click `×` to move that note's Markdown file to Trash.
+- Type `#`, `##`, or `###` headings and `**bold**` text to style them live.
+- Type `- [ ]` or `- [x]` at the start of a line for a clickable checkbox.
+
+Markdown remains directly editable in the same view. Syntax markers are shown
+on the active line and hidden after the cursor moves elsewhere; there is no
+separate preview mode. Unsupported Markdown stays ordinary text.
 
 The same lifecycle controls are available from a terminal when needed:
 

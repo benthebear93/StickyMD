@@ -32,6 +32,7 @@ jobs:
             tests/test_simple_sticky.py \
             tests/x11_backspace_regression.py \
             tests/x11_interaction.py \
+            tests/x11_live_markdown.py \
             tests/x11_reference_copy.py
 
       - name: Run headless unit tests

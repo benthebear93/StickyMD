@@ -11,6 +11,7 @@ coding agents can work with the same text.
 ## Features
 
 - Multiple independently saved notes
+- Live inline styling for `#` headings, `**bold**`, and task checkboxes
 - Automatic saving and live reload after external file edits
 - Position and size restoration across logins
 - Move and resize from every edge or corner
@@ -68,6 +69,12 @@ To update, run `./install.sh` again and restart the running process:
 - Drag the empty top strip to move a note.
 - Drag any edge or corner to resize it.
 - Click `×` to move that note's Markdown file to Trash.
+- Type `#`, `##`, or `###` headings and `**bold**` text to style them live.
+- Type `- [ ]` or `- [x]` at the start of a line for a clickable checkbox.
+
+Markdown remains directly editable in the same view. Syntax markers are shown
+on the active line and hidden after the cursor moves elsewhere; there is no
+separate preview mode. Unsupported Markdown stays ordinary text.
 
 The same lifecycle controls are available from a terminal when needed:
 

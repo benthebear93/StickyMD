@@ -7,9 +7,11 @@ notes, recoverable deletion, eight-direction resizing, raw Markdown persistence,
 external-file reload, login autostart, Codex-friendly note references, and a
 GNOME top-panel control for creating, stopping, and restoring notes. The release
 also includes protection against delayed filesystem-monitor events restoring a
-character just removed with Backspace. It does not add direct Codex integration,
-project links, MCP integration, Markdown rendering, themes, Electron, or a
-normal-window fallback.
+character just removed with Backspace. Version 0.2.0 adds in-place live styling
+for level-one through level-three headings, bold spans, and clickable task
+checkboxes. It does not add direct Codex integration, project links, MCP
+integration, a separate preview mode, themes, Electron, or a normal-window
+fallback.
 
 Detected and tested environment:
 
@@ -29,7 +31,8 @@ layer.
 - `simple-sticky`: multi-note application manager, state migration, one window
   and file monitor per note, exact self-written snapshot tracking, recoverable
   deletion, local control socket, `stickymd new/start/quit`, hover controls,
-  Codex reference copying, and eight-direction resizing.
+  Codex reference copying, live Markdown tags, clickable checkboxes, and
+  eight-direction resizing.
 - `gnome-shell-extension/stickymd@local/`: minimal GNOME Shell 42 panel button
   with running/stopped indication, contextual start/new/quit menu commands, and
   primary-click new-or-restore behavior.
@@ -43,8 +46,8 @@ layer.
   or restoring existing notes without a terminal.
 - `stickymd-new.desktop.in`: new launcher that executes `stickymd new`.
 - `tests/test_simple_sticky.py`: version-2 persistence, migration, Trash, ID,
-  reference formatting, clamping, minimum-size, and eight-direction resize
-  tests.
+  reference formatting, live-Markdown parsing and presentation tags, clamping,
+  minimum-size, and eight-direction resize tests.
 - `tests/x11_properties.sh`: validates every note's EWMH properties and checks
   that an available normal application window is stacked above all notes.
 - `tests/x11_interaction.py`: XTest coverage for hover creation, `Ctrl+N`, all
@@ -54,6 +57,8 @@ layer.
   external atomic replacement still reloads the editor.
 - `tests/x11_reference_copy.py`: live hover, accessibility, immediate-save, and
   clipboard verification for the Codex reference control.
+- `tests/x11_live_markdown.py`: isolated `/tmp` X11 integration coverage for
+  live tags, checkbox persistence, and external-edit restyling.
 - `README.md`: install, update, use, storage, recovery, and test instructions.
 - `.github/workflows/ci.yml`: read-only GitHub Actions checks on Ubuntu 22.04
   for Python tests, source syntax, extension metadata, shell scripts, and
@@ -77,6 +82,13 @@ Content remains ordinary UTF-8 text:
 ~/StickyNotes/note.md
 ~/StickyNotes/note-<12-hex-character-stable-id>.md
 ```
+
+Live Markdown is presentation-only. A 50 ms debounce reparses the small note
+buffer and applies GTK text tags without replacing source characters. The
+active line shows its editable syntax markers; inactive heading, bold, and task
+prefix markers are hidden with a text tag. Checkbox clicks change only the
+single source character between `[ ]` and `[x]`. Applying or removing tags does
+not emit a content-change signal, so styling cannot trigger an autosave loop.
 
 The original file maps to stable ID `primary`; new note IDs are generated once
 and persisted. UI state is separate:
@@ -229,9 +241,9 @@ a 400 ms debounce.
 
 - PASS — the GitHub Actions workflow syntax parsed locally, and every command
   used by the workflow completed successfully against the release tree.
-- PASS — Python compilation completed for the application and four Python test
+- PASS — Python compilation completed for the application and five Python test
   files; shell syntax completed for install, uninstall, and property scripts.
-- PASS — 22 headless unit tests covered atomic UTF-8 replacement, exact written
+- PASS — 27 headless unit tests covered atomic UTF-8 replacement, exact written
   snapshot identity, delayed self-event classification, true external-event
   classification, stable short-reference derivation, first-line title
   normalization, exact clipboard payload construction, v1 migration without
@@ -239,7 +251,13 @@ a 400 ms debounce.
   restored/orphan enrollment, recoverable fallback Trash, stable filename
   validation, all eight resize directions, fixed west/north opposite edges,
   minimum size, work-area clamping, the zero-note `ensure` control command,
-  graceful quit dispatch, and public `new/start/quit` command parsing.
+  graceful quit dispatch, public `new/start/quit` command parsing, the supported
+  live-Markdown subset, Unicode offsets, incomplete syntax, checkbox hit ranges,
+  and content-neutral GTK presentation tags.
+- PASS — the isolated live X11 Markdown test applied heading, bold, unchecked,
+  and hidden-syntax tags without using user note data. Toggling the checkbox
+  saved the exact `- [x]` Markdown source, and an external atomic replacement
+  reloaded and restyled the correct heading, bold span, and checked checkbox.
 - PASS — `stickymd quit` removed the control socket and every StickyMD X11
   window after flushing. The active `note.md` and state-file SHA-256 values were
   unchanged. `stickymd start` restored exactly one registered `primary` window
@@ -358,7 +376,10 @@ visual confirmation:
 5. Right-click the panel icon and select Quit StickyMD. Confirm all notes
    disappear and the icon dims; left-click the dim icon and confirm the same
    notes return without an extra blank note.
-6. For an optional last-note test, move every note to Trash with `×`, run
+6. Enter `# Title`, `**bold**`, and `- [ ] task` on separate lines. Move the
+   cursor between lines and confirm inactive syntax hides while the text remains
+   styled. Click `[ ]` and confirm it changes to `[x]` in the Markdown file.
+7. For an optional last-note test, move every note to Trash with `×`, run
    `~/.local/bin/stickymd new`, and confirm one blank note appears. Restore the
    prior files from Trash and restart StickyMD afterward.
 
@@ -374,6 +395,8 @@ visual confirmation:
   removes the socket before exit.
 - Concurrent edits to the same note are not merged. An external disk edit wins
   over pending unsaved UI content for that one file.
+- Live styling intentionally supports only `#` through `###`, `**bold**`, and
+  line-leading `- [ ]`/`- [x]` checkboxes. Other Markdown stays plain text.
 - Restoring a deleted file while StickyMD is running requires an application
   restart before the restored filename is re-enrolled.
 - Final Alt+Tab, Dock, cursor appearance, and login visuals require the manual

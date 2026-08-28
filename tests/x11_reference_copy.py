@@ -53,7 +53,7 @@ def primary_accessibles():
         )
         reference = next((node for node in nodes if node.name == "#MAIN"), None)
         copy_button = next(
-            (node for node in nodes if node.name == "Copy Codex reference"), None
+            (node for node in nodes if node.name == "Copy note reference"), None
         )
         if editor is not None and reference is not None and copy_button is not None:
             return editor, reference, copy_button
@@ -109,7 +109,7 @@ def main() -> int:
                 f"got {copied_text!r}"
             )
         wait_for_disk_text(TEST_TEXT)
-        print("PASS: hover exposed #MAIN and the Copy Codex reference control.")
+        print("PASS: hover exposed #MAIN and the generic note reference control.")
         print("PASS: copy flushed pending editor text before the 400 ms debounce.")
         print("PASS: clipboard text contained the title, short code, and exact path.")
     finally:

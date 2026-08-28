@@ -198,10 +198,10 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(MODULE.note_reference_title(" \n\t"), "Untitled")
         self.assertEqual(MODULE.note_reference_title("abcdefgh", limit=6), "abcde…")
 
-    def test_codex_reference_contains_title_code_and_exact_plain_file_path(self):
+    def test_note_reference_contains_title_code_and_exact_plain_file_path(self):
         path = Path("/home/example/StickyNotes/note-012345abcdef.md")
         self.assertEqual(
-            MODULE.codex_reference_text(
+            MODULE.note_reference_text(
                 "012345abcdef", path, '장보기 "금요일"\n우유'
             ),
             'Read StickyMD note "장보기 \\"금요일\\"" (#012345).\n'

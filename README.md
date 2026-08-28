@@ -1,12 +1,14 @@
 # StickyMD
 
-Native Markdown sticky notes for GNOME X11, readable and editable by Codex,
-Claude, and other coding agents.
+Native Markdown sticky notes for GNOME X11, readable and editable by people,
+terminals, and coding agents.
 
 StickyMD keeps notes above the wallpaper but behind regular application
 windows. Notes stay out of Alt+Tab, the Dock, and the taskbar. Each note is an
 ordinary Markdown file in `~/StickyNotes`, so people, terminals, editors, and
 coding agents can work with the same text.
+
+![StickyMD note with live headings, bold text, checkboxes, and hover controls](docs/images/stickymd-live-markdown.png)
 
 ## Features
 
@@ -17,7 +19,7 @@ coding agents can work with the same text.
 - Move and resize from every edge or corner
 - Login autostart and a small GNOME panel control for creating or stopping notes
 - Recoverable deletion through the system Trash
-- A hover action that copies the exact note path for Codex or Claude
+- A hover action that copies an exact, agent-neutral note reference
 
 ## Requirements
 

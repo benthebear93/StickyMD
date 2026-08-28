@@ -4,12 +4,12 @@
 
 StickyMD 0.1.0 is the initial public release. It includes multiple independent
 notes, recoverable deletion, eight-direction resizing, raw Markdown persistence,
-external-file reload, login autostart, Codex-friendly note references, and a
+external-file reload, login autostart, agent-friendly note references, and a
 GNOME top-panel control for creating, stopping, and restoring notes. The release
 also includes protection against delayed filesystem-monitor events restoring a
 character just removed with Backspace. Version 0.2.0 adds in-place live styling
 for level-one through level-three headings, bold spans, and clickable task
-checkboxes. It does not add direct Codex integration, project links, MCP
+checkboxes. It does not add direct coding-agent integration, project links, MCP
 integration, a separate preview mode, themes, Electron, or a normal-window
 fallback.
 
@@ -31,7 +31,7 @@ layer.
 - `simple-sticky`: multi-note application manager, state migration, one window
   and file monitor per note, exact self-written snapshot tracking, recoverable
   deletion, local control socket, `stickymd new/start/quit`, hover controls,
-  Codex reference copying, live Markdown tags, clickable checkboxes, and
+  generic note-reference copying, live Markdown tags, clickable checkboxes, and
   eight-direction resizing.
 - `gnome-shell-extension/stickymd@local/`: minimal GNOME Shell 42 panel button
   with running/stopped indication, contextual start/new/quit menu commands, and
@@ -56,10 +56,12 @@ layer.
   delayed monitor event, and Backspace ordering; it also confirms that a true
   external atomic replacement still reloads the editor.
 - `tests/x11_reference_copy.py`: live hover, accessibility, immediate-save, and
-  clipboard verification for the Codex reference control.
+  clipboard verification for the generic note-reference control.
 - `tests/x11_live_markdown.py`: isolated `/tmp` X11 integration coverage for
   live tags, checkbox persistence, and external-edit restyling.
 - `README.md`: install, update, use, storage, recovery, and test instructions.
+- `docs/images/stickymd-live-markdown.png`: isolated demo-window screenshot for
+  the public README; it contains no user note content or desktop details.
 - `.github/workflows/ci.yml`: read-only GitHub Actions checks on Ubuntu 22.04
   for Python tests, source syntax, extension metadata, shell scripts, and
   generated desktop entries.
@@ -165,7 +167,7 @@ the registry is empty, `--autostart` keeps the process alive with no note
 windows, so the panel click can create the next one immediately. Deleting the
 last note does not terminate this process.
 
-## Codex reference UX
+## Coding-agent reference UX
 
 The existing hover control box now contains a stable reference label and a
 standard `edit-copy-symbolic` button before the unchanged `+` and `×` buttons.
@@ -176,8 +178,8 @@ The copy action derives a compact title from the first non-empty line, flushes
 that note's pending content save, and copies a request containing the title,
 short reference, and absolute Markdown path. The path is authoritative, so the
 very unlikely case of two six-character prefixes matching remains unambiguous.
-The action uses the standard X11 clipboard and does not communicate with Codex
-or any external service.
+The action uses the standard X11 clipboard and does not communicate with any
+coding agent or external service.
 
 ## Legacy migration
 
@@ -276,7 +278,7 @@ a 400 ms debounce.
 - PASS — an external atomic replacement immediately after that regression test
   still updated the live editor. The test restored the original note content
   and prior GNOME Show Desktop state in a `finally` block.
-- PASS — the installed window exposed `#MAIN` and `Copy Codex reference`
+- PASS — the installed window exposed `#MAIN` and `Copy note reference`
   through GTK accessibility while hovered.
 - PASS — the live reference test changed editor text and clicked copy after
   only 50 ms. The Markdown file already contained the new text, proving the

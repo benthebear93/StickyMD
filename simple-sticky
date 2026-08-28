@@ -216,7 +216,7 @@ def note_reference_title(text: str, limit: int = 48) -> str:
     return "Untitled"
 
 
-def codex_reference_text(note_id: str, note_path: Path, text: str) -> str:
+def note_reference_text(note_id: str, note_path: Path, text: str) -> str:
     """Build the exact, paste-ready reference copied from one note."""
     title = json.dumps(note_reference_title(text), ensure_ascii=False)
     return (
@@ -632,9 +632,9 @@ class StickyWindow:
         self.reference_label.set_name("note-reference")
         self.reference_label.set_tooltip_text("Stable reference for this note")
         self.copy_button = self._make_icon_control_button(
-            "edit-copy-symbolic", "Copy a reference for Codex"
+            "edit-copy-symbolic", "Copy note reference"
         )
-        self.copy_button.get_accessible().set_name("Copy Codex reference")
+        self.copy_button.get_accessible().set_name("Copy note reference")
         self.add_button = self._make_control_button("+", "Create a new note")
         self.delete_button = self._make_control_button("×", "Move this note to Trash")
         self.copy_button.connect("clicked", self._on_copy_clicked)
@@ -1010,7 +1010,7 @@ class StickyWindow:
 
     def _on_copy_clicked(self, _button: Gtk.Button) -> None:
         self.flush_content()
-        reference = codex_reference_text(
+        reference = note_reference_text(
             self.note_id, self.note_path, self._buffer_text()
         )
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
@@ -1019,7 +1019,7 @@ class StickyWindow:
         self.copy_button.set_image(
             Gtk.Image.new_from_icon_name("object-select-symbolic", Gtk.IconSize.MENU)
         )
-        self.copy_button.set_tooltip_text("Reference copied")
+        self.copy_button.set_tooltip_text("Note reference copied")
         if self._copy_feedback_source:
             GLib.source_remove(self._copy_feedback_source)
         self._copy_feedback_source = GLib.timeout_add(
@@ -1033,7 +1033,7 @@ class StickyWindow:
         self.copy_button.set_image(
             Gtk.Image.new_from_icon_name("edit-copy-symbolic", Gtk.IconSize.MENU)
         )
-        self.copy_button.set_tooltip_text("Copy a reference for Codex")
+        self.copy_button.set_tooltip_text("Copy note reference")
         return GLib.SOURCE_REMOVE
 
     def _cancel_copy_feedback(self) -> None:

@@ -1,12 +1,17 @@
 # StickyMD
 
-Native Markdown sticky notes for GNOME X11, readable and editable by people,
-terminals, and coding agents.
+**Your LLM said something useful. Again.**
 
-StickyMD keeps notes above the wallpaper but behind regular application
-windows. Notes stay out of Alt+Tab, the Dock, and the taskbar. Each note is an
-ordinary Markdown file in `~/StickyNotes`, so people, terminals, editors, and
-coding agents can work with the same text.
+LLMs kept producing answers worth keeping, but saving every result as a
+Markdown file—and reopening an editor just to write a tiny summary—felt like
+homework. I wanted a place to skim the output, jot down only the useful bit,
+and get back to work.
+
+StickyMD is that in-between place: small notes above the wallpaper and below
+your real windows. Each note autosaves as a plain Markdown file, and one click
+copies an exact reference you can hand back to any LLM or coding agent later.
+
+> LLM output → skim → keep the useful bit → StickyMD → reference it later
 
 ![StickyMD note with live headings, bold text, checkboxes, and hover controls](docs/images/stickymd-live-markdown.png)
 

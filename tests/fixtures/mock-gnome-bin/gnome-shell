@@ -1,0 +1,2 @@
+#!/bin/sh
+printf 'GNOME Shell %s.0\n' "${MOCK_GNOME_VERSION:-42}"

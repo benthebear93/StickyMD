@@ -36,14 +36,29 @@ jobs:
             tests/x11_reference_copy.py
 
       - name: Run headless unit tests
-        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+        run: |
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          node --test tests/test_wayland_core.mjs
+
+      - name: Test session-aware installation
+        run: ./tests/install_smoke.sh
 
       - name: Check extension and shell syntax
         run: |
           node --check gnome-shell-extension/stickymd@local/extension.js
+          node --check gnome-shell-extension/stickymd@local/extension-modern.js
+          node --check gnome-shell-extension/stickymd@local/wayland-core.js
           python3 -m json.tool \
             gnome-shell-extension/stickymd@local/metadata.json >/dev/null
-          sh -n install.sh uninstall.sh tests/x11_properties.sh
+          python3 -m json.tool \
+            gnome-shell-extension/stickymd@local/metadata-modern.json >/dev/null
+          sh -n \
+            install.sh \
+            package-extensions.sh \
+            uninstall.sh \
+            stickymd \
+            tests/install_smoke.sh \
+            tests/x11_properties.sh
 
       - name: Validate desktop entries
         run: |

@@ -2,7 +2,7 @@
   "uuid": "stickymd@local",
   "name": "StickyMD",
   "description": "Plain Markdown notes in the GNOME desktop layer.",
-  "shell-version": ["42", "43", "44"],
-  "version": 3,
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 10,
   "url": "https://github.com/benthebear93/StickyMD"
 }

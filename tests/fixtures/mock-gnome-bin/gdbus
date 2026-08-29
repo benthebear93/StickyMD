@@ -1,0 +1,5 @@
+#!/bin/sh
+if [ -n "${MOCK_GDBUS_LOG:-}" ]; then
+    printf '%s\n' "$*" >> "$MOCK_GDBUS_LOG"
+fi
+exit 0

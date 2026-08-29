@@ -1,0 +1,6 @@
+#!/bin/sh
+case "${1:-}" in
+    get) printf '@as []\n' ;;
+    set) exit 0 ;;
+    *) exit 2 ;;
+esac

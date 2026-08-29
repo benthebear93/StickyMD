@@ -11,6 +11,9 @@ StickyMD is that in-between place: small notes above the wallpaper and below
 your real windows. Each note autosaves as a plain Markdown file, and one click
 copies an exact reference you can hand back to any LLM or coding agent later.
 
+The current release is a beta focused on GNOME. See the tested combinations in
+[Requirements](#requirements) before installing.
+
 > LLM output → skim → keep the useful bit → StickyMD → reference it later
 
 ![StickyMD note with live headings, bold text, checkboxes, and hover controls](docs/images/stickymd-live-markdown.png)
@@ -28,17 +31,26 @@ copies an exact reference you can hand back to any LLM or coding agent later.
 
 ## Requirements
 
-StickyMD currently supports **GNOME Shell 42 on X11 only**. It has been tested
-on Ubuntu 22.04 with Python 3.10 and GTK 3.
+StickyMD supports GNOME Shell 42–50 with a session-specific native backend:
 
-Install the runtime packages on Ubuntu:
+| Session | GNOME Shell | Backend | Python requirement |
+| --- | --- | --- | --- |
+| Wayland | 45–50 | GNOME Shell desktop-layer actors | None |
+| X11 | 42–49 | GTK 3 desktop windows | Python 3.9+ and PyGObject |
+
+The X11 backend has been tested on Ubuntu 22.04 with GNOME Shell 42.9. The
+Wayland backend has been live-tested on Ubuntu 24.04 with GNOME Shell 46. Other
+declared Shell versions retain automated compatibility coverage. Other desktop
+environments are not supported.
+
+On Debian or Ubuntu, the X11 backend needs:
 
 ```bash
 sudo apt install python3-gi gir1.2-gtk-3.0 libgtk-3-0
 ```
 
-Wayland is not supported; StickyMD exits instead of falling back to an ordinary
-window with different stacking behavior.
+Wayland notes run inside GNOME Shell and do not use Python or GTK application
+windows.
 
 ## Install
 
@@ -50,18 +62,25 @@ From the project directory:
 ```
 
 The installer writes only to the current user's home directory and does not use
-`sudo`. StickyMD then starts automatically on future logins and is available
-from the GNOME application menu.
+`sudo`. It detects the active session and installs the matching Shell extension.
+StickyMD then starts automatically on future logins and is available from the
+GNOME application menu.
 
-On the first install, GNOME Shell 42 may require a logout and login. On X11 you
-can instead press `Alt+F2`, enter `r`, and press Enter.
+On Wayland and GNOME 45 or newer, log out and back in once after installation.
+On GNOME 42–44 X11, press `Alt+F2`, enter `r`, and press Enter instead.
 
-To update, run `./install.sh` again and restart the running process:
+To update, run the installer again. Wayland extension updates require one logout
+and login:
 
 ```bash
-~/.local/bin/stickymd quit
 ./install.sh
-~/.local/bin/stickymd start
+```
+
+On X11, restart the GTK backend after updating:
+
+```bash
+stickymd quit
+stickymd start
 ```
 
 ## Use
@@ -83,7 +102,7 @@ Markdown remains directly editable in the same view. Syntax markers are shown
 on the active line and hidden after the cursor moves elsewhere; there is no
 separate preview mode. Unsupported Markdown stays ordinary text.
 
-The same lifecycle controls are available from a terminal when needed:
+The same session-independent lifecycle commands are available from a terminal:
 
 ```bash
 stickymd start
@@ -93,6 +112,11 @@ stickymd quit
 Quitting is temporary for the current login session. Login autostart restores
 registered notes the next time the desktop session starts. It never moves or
 deletes note files; `×` remains the separate, recoverable delete action.
+
+On Wayland, the notes are GNOME Shell actors inserted directly above the
+wallpaper and below the compositor's application-window actors. On X11, the
+same behavior comes from EWMH desktop-window hints. Neither backend uses
+always-on-top.
 
 The copy button creates a paste-ready request containing the note's first text
 line, stable short reference, and exact file path:
@@ -142,11 +166,21 @@ Run the headless test suite with:
 
 ```bash
 python3 -m unittest -v tests/test_simple_sticky.py
+node --test tests/test_wayland_core.mjs
+./tests/install_smoke.sh
 ```
 
-GitHub Actions runs the headless tests plus Python, GNOME extension, shell, and
-desktop-entry validation on every push and pull request. Live GNOME/X11 behavior
-remains part of the manual verification record.
+GitHub Actions runs both backend test suites plus Python, modern and legacy
+GNOME extension, installer, shell, and desktop-entry validation on every push
+and pull request. Live compositor behavior remains part of the manual
+verification record.
+
+Maintainers can build separate Shell extension bundles for both generations:
+
+```bash
+./package-extensions.sh
+```
 
 Implementation details and the full verification record are in
-[`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
+[`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md). Release history is in
+[`CHANGELOG.md`](CHANGELOG.md).

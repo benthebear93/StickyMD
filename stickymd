@@ -1,0 +1,47 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -eq 0 ]; then
+    command_name=__ensure
+else
+    command_name=$1
+fi
+case "$command_name" in
+    -h|--help)
+        printf 'usage: stickymd [start|new|quit]\n'
+        exit 0
+        ;;
+    -V|--version)
+        printf 'StickyMD 0.3.0\n'
+        exit 0
+        ;;
+    start|--autostart) dbus_method=Start ;;
+    __ensure) dbus_method=Ensure ;;
+    new) dbus_method=New ;;
+    quit) dbus_method=Quit ;;
+    *)
+        printf 'stickymd: ERROR: unknown command: %s\n' "$command_name" >&2
+        exit 2
+        ;;
+esac
+
+if [ "${XDG_SESSION_TYPE:-}" = "wayland" ]; then
+    if gdbus call --session \
+        --dest org.stickymd.StickyMD \
+        --object-path /org/stickymd/StickyMD \
+        --method "org.stickymd.StickyMD.$dbus_method" >/dev/null; then
+        exit 0
+    fi
+    printf '%s\n' \
+        'stickymd: ERROR: the GNOME Shell extension is not available' \
+        'stickymd: log out and back in after installation, then try again' >&2
+    exit 1
+fi
+
+x11_backend="$HOME/.local/lib/stickymd/simple-sticky"
+if [ ! -x "$x11_backend" ]; then
+    printf 'stickymd: ERROR: the X11 backend is not installed: %s\n' \
+        "$x11_backend" >&2
+    exit 1
+fi
+exec "$x11_backend" "$@"

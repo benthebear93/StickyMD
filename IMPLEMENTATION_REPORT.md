@@ -2,16 +2,18 @@
 
 ## Scope and target environment
 
-StickyMD 0.1.0 is the initial public release. It includes multiple independent
-notes, recoverable deletion, eight-direction resizing, raw Markdown persistence,
-external-file reload, login autostart, agent-friendly note references, and a
-GNOME top-panel control for creating, stopping, and restoring notes. The release
-also includes protection against delayed filesystem-monitor events restoring a
-character just removed with Backspace. Version 0.2.0 adds in-place live styling
+StickyMD 0.1.0 established multiple independent notes, recoverable deletion,
+eight-direction resizing, raw Markdown persistence, external-file reload, login
+autostart, agent-friendly note references, and a GNOME top-panel control for
+creating, stopping, and restoring notes. It also includes protection against
+delayed filesystem-monitor events restoring a character just removed with
+Backspace. Version 0.2.0 adds in-place live styling
 for level-one through level-three headings, bold spans, and clickable task
 checkboxes. It does not add direct coding-agent integration, project links, MCP
 integration, a separate preview mode, themes, Electron, or a normal-window
-fallback.
+fallback. Version 0.3.0 adds a GNOME Shell 45–50 Wayland backend, a
+session-aware launcher and installer, and shared data compatibility between the
+Wayland and X11 backends.
 
 Detected and tested environment:
 
@@ -22,9 +24,17 @@ Detected and tested environment:
 - GTK: 3.24.33
 - PyGObject: 3.42.1
 
-The implementation intentionally targets GNOME on X11. It rejects Wayland at
-startup because an ordinary Wayland client cannot request GNOME Shell's desktop
-layer.
+Additional live Wayland verification environment:
+
+- Distribution: Ubuntu 24.04 LTS virtual machine
+- Desktop: `XDG_CURRENT_DESKTOP=ubuntu:GNOME`
+- GNOME Shell: 46.0
+- Session: `XDG_SESSION_TYPE=wayland`
+- Display: 925×1006 logical pixels
+
+The host remains the live X11 verification target. The Ubuntu 24.04 virtual
+machine is the live GNOME 46 Wayland target. StickyMD never substitutes an
+ordinary Wayland application window.
 
 ## Modified files
 
@@ -33,12 +43,24 @@ layer.
   deletion, local control socket, `stickymd new/start/quit`, hover controls,
   generic note-reference copying, live Markdown tags, clickable checkboxes, and
   eight-direction resizing.
-- `gnome-shell-extension/stickymd@local/`: minimal GNOME Shell 42 panel button
-  with running/stopped indication, contextual start/new/quit menu commands, and
-  primary-click new-or-restore behavior.
-- `install.sh`: installs the `stickymd` command, compatibility command,
-  autostart entry, New Sticky Note launcher, and user Shell extension; it also
-  persists the extension UUID without replacing unrelated enabled extensions.
+- `stickymd`: session-aware shell launcher. On Wayland it calls the Shell
+  extension over a private session D-Bus interface; on X11 it executes the
+  installed GTK backend.
+- `gnome-shell-extension/stickymd@local/extension.js`: legacy GNOME Shell 42–44
+  panel controller for the X11 backend.
+- `gnome-shell-extension/stickymd@local/extension-modern.js`: GNOME Shell 45–50
+  ESM implementation. It renders notes inside the Shell on Wayland and remains
+  a process controller on X11.
+- `gnome-shell-extension/stickymd@local/wayland-core.js`: GI-independent state,
+  Markdown, Unicode-offset, file-event, and eight-direction geometry helpers.
+- `gnome-shell-extension/stickymd@local/stylesheet.css`: fixed note, editor,
+  hover-control, and resize-hit styling for the Wayland actors.
+- `install.sh`: detects GNOME version and session, installs the correct legacy
+  or modern extension, adds X11 autostart only when required, and preserves
+  unrelated enabled extensions.
+- `package-extensions.sh`: builds separate GNOME 42–44 and GNOME 45–50 bundles,
+  including the modern helper module that `gnome-extensions pack` otherwise
+  omits unless explicitly listed.
 - `uninstall.sh`: disables and removes the Shell extension, commands, and
   launchers while preserving user data by default.
 - `simple-sticky.desktop.in`: updated login autostart metadata.
@@ -48,6 +70,10 @@ layer.
 - `tests/test_simple_sticky.py`: version-2 persistence, migration, Trash, ID,
   reference formatting, live-Markdown parsing and presentation tags, clamping,
   minimum-size, and eight-direction resize tests.
+- `tests/test_wayland_core.mjs`: equivalent registry, migration, Unicode,
+  Markdown, Backspace-race, reference, and resize coverage for Wayland.
+- `tests/install_smoke.sh`: isolated-home installation and removal checks for
+  GNOME 42 X11, GNOME 50 Wayland, and the rejected GNOME 42 Wayland case.
 - `tests/x11_properties.sh`: validates every note's EWMH properties and checks
   that an available normal application window is stacked above all notes.
 - `tests/x11_interaction.py`: XTest coverage for hover creation, `Ctrl+N`, all
@@ -59,24 +85,43 @@ layer.
   clipboard verification for the generic note-reference control.
 - `tests/x11_live_markdown.py`: isolated `/tmp` X11 integration coverage for
   live tags, checkbox persistence, and external-edit restyling.
+- `tests/libvirt_type.py`: libvirt/QEMU keyboard and monitor-input helper used
+  for repeatable GNOME 46 guest verification.
+- `tests/vm_http_bridge.py`: local VM artifact server and guest report/upload
+  receiver used by the Wayland test workflow.
 - `README.md`: install, update, use, storage, recovery, and test instructions.
+- `CHANGELOG.md`: concise public release history through version 0.3.0.
 - `docs/images/stickymd-live-markdown.png`: isolated demo-window screenshot for
   the public README; it contains no user note content or desktop details.
 - `.github/workflows/ci.yml`: read-only GitHub Actions checks on Ubuntu 22.04
-  for Python tests, source syntax, extension metadata, shell scripts, and
-  generated desktop entries.
+  for both core test suites, session-aware installation, source syntax, both
+  extension generations, shell scripts, and generated desktop entries.
 - `.gitignore`: excludes local Python and packaging build artifacts.
 
-The source executable retains its original `simple-sticky` filename to extend
-the existing project safely. Installation exposes the preferred command as
-`~/.local/bin/stickymd`.
+The X11 source executable retains its original `simple-sticky` filename to
+extend the existing project safely. It is installed under
+`~/.local/lib/stickymd/`; the public `~/.local/bin/stickymd` command selects the
+backend without requiring Python on Wayland.
 
 ## Architecture and storage
+
+Both backends use the same version-2 registry and Markdown filenames. Switching
+between a supported X11 and Wayland session does not migrate, rename, or copy
+note content.
 
 `StickyApplication` owns the versioned registry and a collection of
 `StickyWindow` objects. Each `StickyWindow` independently owns its GTK text
 buffer, 400 ms save debounce, filesystem monitor, pending reload, Markdown path,
-and geometry.
+and geometry on X11.
+
+On Wayland, `WaylandNoteManager` owns a `St.Widget` note layer inserted into
+`global.window_group` immediately above GNOME Shell's background group. Normal
+`Meta.WindowActor` children remain above the entire StickyMD layer. Notes are
+therefore not application windows, never enter Alt+Tab or the Dock, remain
+global across workspaces, and stay visible when application windows are hidden.
+Each `StickyNote` actor owns an editable multiline `Clutter.Text`, its own save
+and reload debounce, live Pango attributes, geometry, controls, and resize hit
+areas.
 
 Content remains ordinary UTF-8 text:
 
@@ -86,11 +131,22 @@ Content remains ordinary UTF-8 text:
 ```
 
 Live Markdown is presentation-only. A 50 ms debounce reparses the small note
-buffer and applies GTK text tags without replacing source characters. The
-active line shows its editable syntax markers; inactive heading, bold, and task
-prefix markers are hidden with a text tag. Checkbox clicks change only the
-single source character between `[ ]` and `[x]`. Applying or removing tags does
-not emit a content-change signal, so styling cannot trigger an autosave loop.
+buffer and applies GTK text tags on X11 or Pango attributes on Wayland without
+replacing source characters. The active line shows its editable syntax markers;
+inactive heading, bold, and task prefix markers are hidden. Checkbox clicks
+change only the single source character between `[ ]` and `[x]`. Applying or
+removing presentation attributes does not trigger an autosave loop.
+
+On GNOME Shell, `St.Entry` reapplies CSS-derived Pango attributes whenever its
+style changes, including inherited hover and focus changes. Each Wayland note
+therefore uses an after-handler for `style-changed` and restores its Markdown
+attributes in the same frame, after the default CSS pass but before painting.
+Focus and cursor changes still use the short parser debounce. Only the focused
+note exposes syntax on its active line; unfocused notes remain fully styled.
+GNOME 46 may also report a null event source during capture, so the blank-editor
+fallback uses actor coordinates and propagates clicks inside the allocated text
+actor. This preserves normal cursor placement, selection, and checkbox hit
+testing.
 
 The original file maps to stable ID `primary`; new note IDs are generated once
 and persisted. UI state is separate:
@@ -111,22 +167,24 @@ and persisted. UI state is separate:
 }
 ```
 
-All content and registry writes use a temporary file in the destination
-directory, file `fsync`, `os.replace`, and directory `fsync`. A monitor watches
-the note directory rather than one inode, so external atomic replacements are
-also detected. A reload is applied only to the note whose filename generated
-the event. Each content write records a signature containing device, inode,
-size, and nanosecond modification time from the same descriptor that was
-flushed. If its monitor event arrives after another local keystroke, that exact
-self-written snapshot is ignored without cancelling the newer pending save.
-An actually different disk snapshot remains authoritative.
+The X11 backend writes through a same-directory temporary file, file `fsync`,
+`os.replace`, and directory `fsync`. The Wayland backend uses
+`Gio.File.replace_contents`, which provides atomic destination replacement.
+Both monitor the note directory rather than one inode, so external atomic
+replacements are detected and routed only to the matching note. X11 records an
+exact inode snapshot; Wayland records the last replacement's text plus file ID,
+size, and microsecond modification time. A matching self snapshot is retained
+across all duplicate Gio monitor events instead of being forgotten after the
+first acknowledgement. In both paths, a delayed self-write event is ignored
+without cancelling a newer pending local edit. An actually different disk
+snapshot remains authoritative.
 
 Deletion first calls the GIO system Trash API. If unavailable, it atomically
 moves the Markdown file to `~/StickyNotes/.trash/` with a timestamp and unique
 suffix. The note's registry entry is removed only after the recoverable move
 succeeds. No UI delete path calls `rm`.
 
-The local mode-0600 UNIX socket at
+On X11, the local mode-0600 UNIX socket at
 `~/.local/state/simple-sticky/control.sock` lets `stickymd new` create a note in
 the running process. If the process is absent, the command starts it with an
 explicit create-on-start request. The process remains alive when the registry is
@@ -136,14 +194,20 @@ note if the running process is empty, or reports that existing notes can be seen
 with GNOME Show Desktop. Login autostart does not recreate intentionally deleted
 notes.
 
-`stickymd quit` sends a local `quit` request instead of killing the process.
-The GTK main loop first flushes every note, captures current geometry, atomically
-saves the registry, cancels file monitors, closes the control socket, and then
-exits. `stickymd start` launches the same login restore path without creating a
-new note. Quitting therefore hides all notes and stops the Python process while
-leaving every Markdown file and registry entry intact.
+On Wayland, the public launcher sends the same `start`, `new`, and `quit`
+commands to the enabled Shell extension over the user session bus. The D-Bus
+object has no note-content methods; content remains accessible only through the
+plain Markdown files.
 
-## GNOME panel integration
+On X11, `stickymd quit` sends a local `quit` request instead of killing the
+process. The GTK main loop first flushes every note, captures current geometry,
+atomically saves the registry, cancels file monitors, closes the control socket,
+and then exits. On Wayland, the same command flushes and destroys the note
+actors while leaving the panel extension enabled. `stickymd start` restores the
+registered notes without creating a new one in either backend. Quitting always
+leaves every Markdown file and registry entry intact.
+
+## GNOME panel and session integration
 
 GNOME Shell 42 does not expose a native legacy tray to GTK applications. The
 installed Ubuntu AppIndicator extension was detected, but no AppIndicator GI
@@ -152,20 +216,21 @@ performing the requested one-click action. StickyMD therefore uses a narrowly
 scoped user Shell extension instead of changing the note windows or adding a
 second daemon.
 
-The extension creates one `PanelMenu.Button` in the right status area with the
-standard `document-edit-symbolic` icon. It observes only the existence of the
-mode-0600 control socket: the icon is fully opaque while running and dim while
-stopped. Primary click invokes `stickymd new` when running and `stickymd start`
-when stopped. The secondary-click menu contains current status/start, New note,
-and Quit StickyMD entries. The panel control remains available after the GTK
-process exits because it belongs to GNOME Shell, not to the application process.
-Other panel or Shell behavior is not patched.
+Both extension generations create one `PanelMenu.Button` in the right status
+area with the standard `document-edit-symbolic` icon. It observes only the
+existence of the mode-0600 control socket on X11 and the internal actor-manager
+state on Wayland.
+The icon is fully opaque while running and dim while stopped. Primary click
+creates a note when running and restores the registered notes when stopped. The
+secondary-click menu contains current status/start, New note, and Quit StickyMD
+entries. The panel control remains available after all notes stop because it
+belongs to GNOME Shell.
 
-`~/.config/autostart/simple-sticky.desktop` starts the Python process after
-login. Registered notes are mapped without an intentional focus request. When
-the registry is empty, `--autostart` keeps the process alive with no note
-windows, so the panel click can create the next one immediately. Deleting the
-last note does not terminate this process.
+On X11, `~/.config/autostart/simple-sticky.desktop` starts the Python process
+after login. On Wayland, the enabled Shell extension itself restores the notes,
+so no Python process or separate autostart entry is installed. Registered notes
+are created without an intentional focus request in either backend. Deleting
+the last note does not disable the panel control.
 
 ## Coding-agent reference UX
 
@@ -178,8 +243,8 @@ The copy action derives a compact title from the first non-empty line, flushes
 that note's pending content save, and copies a request containing the title,
 short reference, and absolute Markdown path. The path is authoritative, so the
 very unlikely case of two six-character prefixes matching remains unambiguous.
-The action uses the standard X11 clipboard and does not communicate with any
-coding agent or external service.
+The action uses the standard desktop clipboard through GTK on X11 or St on
+Wayland and does not communicate with any coding agent or external service.
 
 ## Legacy migration
 
@@ -237,10 +302,73 @@ The calculation enforces 160×120 minimum size and clamps the dragged edge to th
 monitor work area. Configure events update only that note's registry entry after
 a 400 ms debounce.
 
+The Wayland actor uses the same pure geometry calculation. Eight transparent
+reactive actors surround the editor; corners are inserted above edges in the
+Clutter pick order. A stage grab captures one immutable starting geometry and
+logical stage-pointer position, so scaling is handled in GNOME Shell's own
+coordinate space. Only the note actor moves or resizes, and the registry is
+saved after release with the same 400 ms debounce.
+
 ## Verification record
 
 ### Automated and live checks completed
 
+- PASS — 18 Node tests cover Wayland-compatible v1 migration, explicit empty
+  state, orphan enrollment, stable filenames and references, serialized v2
+  state, Unicode character/UTF-8 offsets, the supported Markdown subset,
+  checkbox hit testing, delayed self-event suppression, all resize directions,
+  fixed opposite edges, and minimum size.
+- PASS — isolated installer smoke tests selected the legacy files and X11
+  autostart for GNOME 42 X11, selected the ESM actor backend with no autostart
+  for GNOME 50 Wayland, removed all installed program files while preserving
+  data, and rejected GNOME 42 Wayland instead of falling back to a normal
+  window.
+- PASS — Node parsed the modern ESM extension and pure helper module; Python
+  compiled the X11 backend; POSIX shell syntax checks passed for the launcher,
+  installer, uninstaller, and X11 property test; both metadata files parsed as
+  JSON.
+- PASS — `package-extensions.sh` produced separate legacy and modern extension
+  archives. Archive inspection confirmed that the modern bundle contains
+  `extension.js`, `metadata.json`, `stylesheet.css`, and `wayland-core.js`.
+- PASS — the session-aware installer updated the live GNOME 42 X11 system,
+  placed the Python backend at `~/.local/lib/stickymd/simple-sticky`, and the
+  public launcher reported version 0.3.0. A graceful quit/start replaced the
+  old process with that installed backend. `note.md` and `state.json` hashes
+  were identical before installation and after restart.
+- PASS — the restarted 0.3.0 X11 window still advertised desktop, below,
+  sticky, skip-taskbar, skip-pager, and all-workspace EWMH properties. A live
+  normal application window remained above it in the stacking list.
+- PASS — Ubuntu 24.04 GNOME Shell 46.0 Wayland loaded extension version 9 as
+  enabled and active after a full guest reboot. Existing note files and version-2
+  geometry state were restored without a Python process.
+- PASS — a real host XTest click was mapped through the visible GNOME Boxes
+  window to a zero-byte Wayland `note.md`. The empty note gained keyboard focus,
+  displayed its caret at the top, accepted `FINAL8`, and atomically autosaved the
+  text. The test text was then removed, `note.md` was confirmed as zero bytes,
+  and another real click displayed the caret again while the file stayed empty.
+- PASS — live GNOME 46 diagnostics reproduced the earlier empty-note failure:
+  `Clutter.Event.get_source()` returned `null` during capture. The final handler
+  distinguishes allocated text from blank viewport space by coordinates. A real
+  click on loaded heading text placed the cursor on that exact line, while a
+  real click in an empty note still focused the editor and displayed its caret.
+- PASS — after a version-9 session restart, an existing note was styled before
+  its first edit. A second note was populated with headings, bold text, and an
+  unchecked task. Repeated real clicks between the two notes preserved both
+  notes' rendering; only the focused note exposed syntax on its active line.
+- PASS — a real pointer click changed the temporary task from `- [ ]` to
+  `- [x]`, and the exact checked Markdown source was observed in `note.md` after
+  autosave. The temporary content was then selected and removed with Backspace.
+  Moving focus to the other note did not resurrect it, and `note.md` was
+  confirmed as a zero-byte file after the monitor events had settled.
+- PASS — version 10 replaces the 50 ms hover-time style repair with a GObject
+  after-handler, so inherited `St.Entry` style changes restore Markdown Pango
+  attributes before that frame is painted. Source checks assert the after-handler
+  path and reject the previous delayed connection. After a normal GNOME 46
+  login, version 10 reported `Enabled: Yes` and `State: ACTIVE`. Two 120 fps
+  captures covered hover entry plus an entry/exit/re-entry round trip. All 285
+  round-trip frames retained the rendered heading, checkbox, and bold text while
+  the hover controls appeared and disappeared; no raw Markdown frame was
+  observed.
 - PASS — the GitHub Actions workflow syntax parsed locally, and every command
   used by the workflow completed successfully against the release tree.
 - PASS — Python compilation completed for the application and five Python test
@@ -361,9 +489,28 @@ a 400 ms debounce.
 
 ### Short manual visual checklist
 
-The final Show Desktop composition has been captured and inspected, but the
-Shell switcher, pointer cursor shapes, and login behavior still require a brief
-visual confirmation:
+Before a public Wayland release, install from a GNOME 45–50 Wayland session,
+log out and back in, and complete this release gate:
+
+1. Confirm the existing `note.md` content appears without a Python process.
+2. Put a normal terminal over every note and confirm it fully covers them.
+   Confirm the notes are absent from Alt+Tab, the Dock, and the workspace list.
+3. Use Show Desktop and switch workspaces; confirm the same note actors remain
+   above the wallpaper in the same logical positions.
+4. Create three notes from hover `+`, `Ctrl+N`, the panel, and `stickymd new`.
+   Restart the session and confirm all content and geometry returns.
+5. Resize from all eight directions, especially north and west, and confirm the
+   opposite edges remain fixed and the minimum size is 160×120.
+6. Run `printf '\nExternal edit test\n' >> ~/StickyNotes/note.md` and confirm
+   only the primary note updates. Press Backspace during autosave and confirm
+   the deleted character does not return.
+7. Delete one note and confirm its Markdown file is in system Trash or
+   `~/StickyNotes/.trash/`. Quit and restore from the panel without deleting any
+   remaining files.
+
+For the already tested X11 backend, the final Show Desktop composition has been
+captured and inspected, but the Shell switcher, pointer cursor shapes, and login
+behavior still require a brief visual confirmation:
 
 1. Move the pointer away from every note, then over one note. Confirm `+` and
    `×` are hidden normally, appear only on hover, and do not shift text layout.
@@ -387,19 +534,28 @@ visual confirmation:
 
 ## Remaining limitations
 
-- GNOME X11 is the only supported desktop/session combination. There is no
-  Wayland or cross-desktop fallback.
-- The panel helper is intentionally pinned to GNOME Shell 42. A first local
-  install can require one `Alt+F2`, `r` Shell reload; subsequent logins load the
-  enabled extension automatically.
-- Panel running state is inferred from the local control socket once per second.
-  A hard crash can leave the icon looking active briefly; normal panel/CLI quit
-  removes the socket before exit.
+- Live-tested support includes GNOME 42 X11 and Ubuntu 24.04 GNOME 46 Wayland.
+  Other declared GNOME 45–50 versions retain automated compatibility coverage
+  but have not each received the full live GUI gate.
+- GNOME 42–44 Wayland, KDE Plasma, Cinnamon, and other desktop environments are
+  unsupported. The installer exits instead of substituting a normal window.
+- The Wayland backend locates Mutter's `Meta.BackgroundGroup` within the public
+  Shell window group and places its actor layer immediately above it. The
+  installer pins declared compatibility to reviewed Shell versions 45–50; a
+  future Shell actor-tree change may still require a small port.
+- GNOME 45 introduced ESM extensions, so separate legacy and modern source
+  files are installed according to the detected Shell version.
+- X11 requires Python 3.9+, PyGObject, and GTK 3. Wayland uses only GNOME
+  Shell/GJS/Gio and has no Python runtime dependency. A pip package would not
+  remove the X11 backend's native GTK/PyGObject system dependencies.
+- On X11, panel running state is inferred from the local control socket once per
+  second. A hard crash can leave the icon looking active briefly; normal
+  panel/CLI quit removes the socket before exit.
 - Concurrent edits to the same note are not merged. An external disk edit wins
   over pending unsaved UI content for that one file.
 - Live styling intentionally supports only `#` through `###`, `**bold**`, and
   line-leading `- [ ]`/`- [x]` checkboxes. Other Markdown stays plain text.
 - Restoring a deleted file while StickyMD is running requires an application
   restart before the restored filename is re-enrolled.
-- Final Alt+Tab, Dock, cursor appearance, and login visuals require the manual
-  checks above even though their underlying X11 hints and geometry were verified.
+- Final Alt+Tab, Dock, all-workspace, Show Desktop, and eight-way cursor visuals
+  still require the manual Wayland checklist on each additional Shell version.

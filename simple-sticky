@@ -30,7 +30,7 @@ from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk, Pango  # noqa: E402
 
 
 APP_NAME = "StickyMD"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 STATE_VERSION = 2
 SAVE_DELAY_MS = 400
 RELOAD_DELAY_MS = 120

@@ -43,6 +43,9 @@ jobs:
       - name: Test session-aware installation
         run: ./tests/install_smoke.sh
 
+      - name: Test end-user release archive
+        run: ./tests/package_release_smoke.sh
+
       - name: Check extension and shell syntax
         run: |
           node --check gnome-shell-extension/stickymd@local/extension.js
@@ -55,9 +58,11 @@ jobs:
           sh -n \
             install.sh \
             package-extensions.sh \
+            package-release.sh \
             uninstall.sh \
             stickymd \
             tests/install_smoke.sh \
+            tests/package_release_smoke.sh \
             tests/x11_properties.sh
 
       - name: Validate desktop entries

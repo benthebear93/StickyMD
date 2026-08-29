@@ -175,7 +175,16 @@ GNOME extension, installer, shell, and desktop-entry validation on every push
 and pull request. Live compositor behavior remains part of the manual
 verification record.
 
-Maintainers can build separate Shell extension bundles for both generations:
+Maintainers can build the trimmed end-user release archive with:
+
+```bash
+./package-release.sh
+```
+
+The archive keeps the installer, application files, user documentation, and
+screenshot while omitting tests, CI configuration, and implementation notes.
+
+Separate Shell extension bundles for both generations can be built with:
 
 ```bash
 ./package-extensions.sh

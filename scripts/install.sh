@@ -1,16 +1,18 @@
 #!/bin/sh
 set -eu
 
-source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 launcher="$HOME/.local/bin/stickymd"
 compatibility_launcher="$HOME/.local/bin/simple-sticky"
 backend_dir="$HOME/.local/lib/stickymd"
-x11_backend="$backend_dir/simple-sticky"
-autostart="$HOME/.config/autostart/simple-sticky.desktop"
+x11_backend="$backend_dir/x11_backend.py"
+legacy_x11_backend="$backend_dir/simple-sticky"
+autostart="$HOME/.config/autostart/stickymd.desktop"
+legacy_autostart="$HOME/.config/autostart/simple-sticky.desktop"
 application_launcher="$HOME/.local/share/applications/stickymd.desktop"
 new_launcher="$HOME/.local/share/applications/stickymd-new.desktop"
 extension_uuid="stickymd@local"
-extension_source="$source_dir/gnome-shell-extension/$extension_uuid"
+extension_source="$project_dir/src/gnome-shell/$extension_uuid"
 extension_dir="$HOME/.local/share/gnome-shell/extensions/$extension_uuid"
 
 if ! command -v gnome-shell >/dev/null 2>&1; then
@@ -80,9 +82,9 @@ mkdir -p \
     "$HOME/.config/autostart" \
     "$HOME/.local/share/applications" \
     "$extension_dir"
-install -m 0755 "$source_dir/stickymd" "$launcher"
-install -m 0755 "$source_dir/stickymd" "$compatibility_launcher"
-install -m 0755 "$source_dir/simple-sticky" "$x11_backend"
+install -m 0755 "$project_dir/src/stickymd" "$launcher"
+install -m 0755 "$project_dir/src/stickymd" "$compatibility_launcher"
+install -m 0755 "$project_dir/src/x11_backend.py" "$x11_backend"
 install -m 0644 "$extension_implementation" "$extension_dir/extension.js"
 install -m 0644 "$extension_metadata" "$extension_dir/metadata.json"
 install -m 0644 "$extension_source/wayland-core.js" \
@@ -97,22 +99,26 @@ trap 'rm -f "$temporary_application" "$temporary_launcher" "$temporary_autostart
     EXIT HUP INT TERM
 escaped_launcher=$(printf '%s' "$launcher" | sed 's/[&|]/\\&/g')
 sed "s|@EXECUTABLE@|$escaped_launcher|g" \
-    "$source_dir/stickymd.desktop.in" > "$temporary_application"
+    "$project_dir/data/applications/stickymd.desktop.in" \
+    > "$temporary_application"
 sed "s|@EXECUTABLE@|$escaped_launcher|g" \
-    "$source_dir/stickymd-new.desktop.in" > "$temporary_launcher"
+    "$project_dir/data/applications/stickymd-new.desktop.in" \
+    > "$temporary_launcher"
 chmod 0644 "$temporary_application" "$temporary_launcher"
 mv -f "$temporary_application" "$application_launcher"
 mv -f "$temporary_launcher" "$new_launcher"
 
 if [ "$session_type" = x11 ]; then
-    temporary_autostart=$(mktemp "$HOME/.config/autostart/.simple-sticky.desktop.XXXXXX")
+    temporary_autostart=$(mktemp "$HOME/.config/autostart/.stickymd.desktop.XXXXXX")
     sed "s|@EXECUTABLE@|$escaped_launcher|g" \
-        "$source_dir/simple-sticky.desktop.in" > "$temporary_autostart"
+        "$project_dir/data/autostart/stickymd.desktop.in" \
+        > "$temporary_autostart"
     chmod 0644 "$temporary_autostart"
     mv -f "$temporary_autostart" "$autostart"
 else
     rm -f "$autostart"
 fi
+rm -f "$legacy_x11_backend" "$legacy_autostart"
 trap - EXIT HUP INT TERM
 
 enabled_extensions=$(gsettings get org.gnome.shell enabled-extensions)

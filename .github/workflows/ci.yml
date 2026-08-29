@@ -28,8 +28,8 @@ jobs:
       - name: Compile Python sources
         run: |
           python3 -m py_compile \
-            simple-sticky \
-            tests/test_simple_sticky.py \
+            src/x11_backend.py \
+            tests/test_x11_backend.py \
             tests/x11_backspace_regression.py \
             tests/x11_interaction.py \
             tests/x11_live_markdown.py \
@@ -41,26 +41,26 @@ jobs:
           node --test tests/test_wayland_core.mjs
 
       - name: Test session-aware installation
-        run: ./tests/install_smoke.sh
+        run: tests/install_smoke.sh
 
       - name: Test end-user release archive
-        run: ./tests/package_release_smoke.sh
+        run: tests/package_release_smoke.sh
 
       - name: Check extension and shell syntax
         run: |
-          node --check gnome-shell-extension/stickymd@local/extension.js
-          node --check gnome-shell-extension/stickymd@local/extension-modern.js
-          node --check gnome-shell-extension/stickymd@local/wayland-core.js
+          node --check src/gnome-shell/stickymd@local/extension.js
+          node --check src/gnome-shell/stickymd@local/extension-modern.js
+          node --check src/gnome-shell/stickymd@local/wayland-core.js
           python3 -m json.tool \
-            gnome-shell-extension/stickymd@local/metadata.json >/dev/null
+            src/gnome-shell/stickymd@local/metadata.json >/dev/null
           python3 -m json.tool \
-            gnome-shell-extension/stickymd@local/metadata-modern.json >/dev/null
+            src/gnome-shell/stickymd@local/metadata-modern.json >/dev/null
           sh -n \
-            install.sh \
-            package-extensions.sh \
-            package-release.sh \
-            uninstall.sh \
-            stickymd \
+            scripts/install.sh \
+            scripts/package-extensions.sh \
+            scripts/package-release.sh \
+            scripts/uninstall.sh \
+            src/stickymd \
             tests/install_smoke.sh \
             tests/package_release_smoke.sh \
             tests/x11_properties.sh
@@ -69,11 +69,11 @@ jobs:
         run: |
           desktop_output=$(mktemp -d)
           for template in \
-            simple-sticky.desktop.in \
-            stickymd.desktop.in \
-            stickymd-new.desktop.in
+            data/autostart/stickymd.desktop.in \
+            data/applications/stickymd.desktop.in \
+            data/applications/stickymd-new.desktop.in
           do
-            output_name=${template%.in}
+            output_name=$(printf '%s' "${template%.in}" | tr '/' '-')
             sed 's|@EXECUTABLE@|/home/runner/.local/bin/stickymd|g' \
               "$template" > "$desktop_output/$output_name"
           done

@@ -6,8 +6,8 @@ test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' EXIT HUP INT TERM
 output_dir="$test_root/output"
 
-"$project_dir/package-release.sh" "$output_dir" >/dev/null
-version=$("$project_dir/stickymd" --version)
+"$project_dir/scripts/package-release.sh" "$output_dir" >/dev/null
+version=$("$project_dir/src/stickymd" --version)
 version=${version#StickyMD }
 package_name="stickymd-$version"
 archive="$output_dir/$package_name.tar.gz"
@@ -18,20 +18,20 @@ tar -C "$test_root" -xzf "$archive"
 
 for required in \
     README.md \
-    install.sh \
-    uninstall.sh \
-    stickymd \
-    simple-sticky \
-    simple-sticky.desktop.in \
-    stickymd.desktop.in \
-    stickymd-new.desktop.in \
+    scripts/install.sh \
+    scripts/uninstall.sh \
+    src/stickymd \
+    src/x11_backend.py \
+    data/autostart/stickymd.desktop.in \
+    data/applications/stickymd.desktop.in \
+    data/applications/stickymd-new.desktop.in \
     docs/images/stickymd-live-markdown.png \
-    gnome-shell-extension/stickymd@local/extension.js \
-    gnome-shell-extension/stickymd@local/extension-modern.js \
-    gnome-shell-extension/stickymd@local/metadata.json \
-    gnome-shell-extension/stickymd@local/metadata-modern.json \
-    gnome-shell-extension/stickymd@local/wayland-core.js \
-    gnome-shell-extension/stickymd@local/stylesheet.css
+    src/gnome-shell/stickymd@local/extension.js \
+    src/gnome-shell/stickymd@local/extension-modern.js \
+    src/gnome-shell/stickymd@local/metadata.json \
+    src/gnome-shell/stickymd@local/metadata-modern.json \
+    src/gnome-shell/stickymd@local/wayland-core.js \
+    src/gnome-shell/stickymd@local/stylesheet.css
 do
     test -f "$release_dir/$required"
 done
@@ -42,8 +42,6 @@ for excluded in \
     CHANGELOG.md \
     IMPLEMENTATION_REPORT.md \
     package.json \
-    package-extensions.sh \
-    package-release.sh \
     tests
 do
     test ! -e "$release_dir/$excluded"
@@ -54,14 +52,16 @@ if grep -q '^## Development$' "$release_dir/README.md"; then
     exit 1
 fi
 
-test -x "$release_dir/install.sh"
-test -x "$release_dir/uninstall.sh"
-test -x "$release_dir/stickymd"
-test -x "$release_dir/simple-sticky"
+test ! -e "$release_dir/scripts/package-extensions.sh"
+test ! -e "$release_dir/scripts/package-release.sh"
+test -x "$release_dir/scripts/install.sh"
+test -x "$release_dir/scripts/uninstall.sh"
+test -x "$release_dir/src/stickymd"
+test -x "$release_dir/src/x11_backend.py"
 sh -n \
-    "$release_dir/install.sh" \
-    "$release_dir/uninstall.sh" \
-    "$release_dir/stickymd"
+    "$release_dir/scripts/install.sh" \
+    "$release_dir/scripts/uninstall.sh" \
+    "$release_dir/src/stickymd"
 
 mock_bin="$project_dir/tests/fixtures/mock-gnome-bin"
 target_home="$test_root/home"
@@ -70,17 +70,17 @@ HOME="$target_home" \
 XDG_SESSION_TYPE=wayland \
 MOCK_GNOME_VERSION=50 \
 PATH="$mock_bin:/usr/bin:/bin" \
-    "$release_dir/install.sh" >/dev/null
-cmp "$release_dir/stickymd" "$target_home/.local/bin/stickymd"
+    "$release_dir/scripts/install.sh" >/dev/null
+cmp "$release_dir/src/stickymd" "$target_home/.local/bin/stickymd"
 cmp \
-    "$release_dir/gnome-shell-extension/stickymd@local/extension-modern.js" \
+    "$release_dir/src/gnome-shell/stickymd@local/extension-modern.js" \
     "$target_home/.local/share/gnome-shell/extensions/stickymd@local/extension.js"
 
 HOME="$target_home" \
 XDG_SESSION_TYPE=wayland \
 MOCK_GNOME_VERSION=50 \
 PATH="$mock_bin:/usr/bin:/bin" \
-    "$release_dir/uninstall.sh" >/dev/null
+    "$release_dir/scripts/uninstall.sh" >/dev/null
 test ! -e "$target_home/.local/bin/stickymd"
 
 printf 'Release archive contents and installation passed.\n'

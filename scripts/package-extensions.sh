@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-extension_source="$source_dir/gnome-shell-extension/stickymd@local"
-output_dir=${1:-"$source_dir/dist"}
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+extension_source="$project_dir/src/gnome-shell/stickymd@local"
+output_dir=${1:-"$project_dir/dist"}
 mkdir -p "$output_dir"
 output_dir=$(CDPATH= cd -- "$output_dir" && pwd)
 build_root=$(mktemp -d)

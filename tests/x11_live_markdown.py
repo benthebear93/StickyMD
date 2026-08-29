@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 
 
-SOURCE = Path(__file__).resolve().parents[1] / "simple-sticky"
+SOURCE = Path(__file__).resolve().parents[1] / "src" / "x11_backend.py"
 LOADER = SourceFileLoader("stickymd_live_markdown", str(SOURCE))
 SPEC = spec_from_loader(LOADER.name, LOADER)
 assert SPEC is not None

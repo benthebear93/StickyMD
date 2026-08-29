@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 
-SOURCE = Path(__file__).resolve().parents[1] / "simple-sticky"
+SOURCE = Path(__file__).resolve().parents[1] / "src" / "x11_backend.py"
 LOADER = SourceFileLoader("stickymd_source", str(SOURCE))
 SPEC = spec_from_loader(LOADER.name, LOADER)
 assert SPEC is not None

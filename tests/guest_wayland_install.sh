@@ -11,7 +11,7 @@ install_status=0
     printf 'desktop=%s\n' "${XDG_CURRENT_DESKTOP:-unset}"
     gnome-shell --version
     printf '%s\n' '--- installer output ---'
-    ./install.sh || install_status=$?
+    ./scripts/install.sh || install_status=$?
     printf '%s\n' '--- installed extension ---'
     test -f "$HOME/.local/share/gnome-shell/extensions/stickymd@local/extension.js"
     test -f "$HOME/.local/share/gnome-shell/extensions/stickymd@local/wayland-core.js"

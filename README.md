@@ -57,7 +57,7 @@ windows.
 From the project directory:
 
 ```bash
-./install.sh
+./scripts/install.sh
 ~/.local/bin/stickymd
 ```
 
@@ -73,7 +73,7 @@ To update, run the installer again. Wayland extension updates require one logout
 and login:
 
 ```bash
-./install.sh
+./scripts/install.sh
 ```
 
 On X11, restart the GTK backend after updating:
@@ -148,14 +148,14 @@ StickyMD uses `~/StickyNotes/.trash/`.
 ## Uninstall
 
 ```bash
-./uninstall.sh
+./scripts/uninstall.sh
 ```
 
 This removes the application and autostart integration but preserves notes and
 state. To also remove active note files and state permanently:
 
 ```bash
-./uninstall.sh --purge
+./scripts/uninstall.sh --purge
 ```
 
 System Trash and `~/StickyNotes/.trash/` are never emptied by the uninstaller.
@@ -165,9 +165,9 @@ System Trash and `~/StickyNotes/.trash/` are never emptied by the uninstaller.
 Run the headless test suite with:
 
 ```bash
-python3 -m unittest -v tests/test_simple_sticky.py
+python3 -m unittest -v tests/test_x11_backend.py
 node --test tests/test_wayland_core.mjs
-./tests/install_smoke.sh
+tests/install_smoke.sh
 ```
 
 GitHub Actions runs both backend test suites plus Python, modern and legacy
@@ -178,7 +178,7 @@ verification record.
 Maintainers can build the trimmed end-user release archive with:
 
 ```bash
-./package-release.sh
+scripts/package-release.sh
 ```
 
 The archive keeps the installer, application files, user documentation, and
@@ -187,9 +187,9 @@ screenshot while omitting tests, CI configuration, and implementation notes.
 Separate Shell extension bundles for both generations can be built with:
 
 ```bash
-./package-extensions.sh
+scripts/package-extensions.sh
 ```
 
-Implementation details and the full verification record are in
-[`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md). Release history is in
-[`CHANGELOG.md`](CHANGELOG.md).
+The repository keeps application code in `src/`, desktop-entry templates in
+`data/`, maintenance commands in `scripts/`, and verification code in `tests/`.
+Release history is in [`CHANGELOG.md`](CHANGELOG.md).

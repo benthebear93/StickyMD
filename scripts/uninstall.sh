@@ -3,9 +3,11 @@ set -eu
 
 executable="$HOME/.local/bin/stickymd"
 compatibility_executable="$HOME/.local/bin/simple-sticky"
-x11_backend="$HOME/.local/lib/stickymd/simple-sticky"
+x11_backend="$HOME/.local/lib/stickymd/x11_backend.py"
+legacy_x11_backend="$HOME/.local/lib/stickymd/simple-sticky"
 backend_dir="$HOME/.local/lib/stickymd"
-autostart="$HOME/.config/autostart/simple-sticky.desktop"
+autostart="$HOME/.config/autostart/stickymd.desktop"
+legacy_autostart="$HOME/.config/autostart/simple-sticky.desktop"
 application_launcher="$HOME/.local/share/applications/stickymd.desktop"
 new_launcher="$HOME/.local/share/applications/stickymd-new.desktop"
 extension_uuid="stickymd@local"
@@ -28,7 +30,9 @@ rm -f \
     "$executable" \
     "$compatibility_executable" \
     "$x11_backend" \
+    "$legacy_x11_backend" \
     "$autostart" \
+    "$legacy_autostart" \
     "$application_launcher" \
     "$new_launcher"
 rm -f \

@@ -38,7 +38,7 @@ if [ "${XDG_SESSION_TYPE:-}" = "wayland" ]; then
     exit 1
 fi
 
-x11_backend="$HOME/.local/lib/stickymd/simple-sticky"
+x11_backend="$HOME/.local/lib/stickymd/x11_backend.py"
 if [ ! -x "$x11_backend" ]; then
     printf 'stickymd: ERROR: the X11 backend is not installed: %s\n' \
         "$x11_backend" >&2

@@ -16,10 +16,10 @@ import {
     serializeRegistry,
     utf16IndexToCharacterOffset,
     utf16IndexToUtf8Offset,
-} from '../gnome-shell-extension/stickymd@local/wayland-core.js';
+} from '../src/gnome-shell/stickymd@local/wayland-core.js';
 
 const modernExtensionSource = readFileSync(new URL(
-    '../gnome-shell-extension/stickymd@local/extension-modern.js',
+    '../src/gnome-shell/stickymd@local/extension-modern.js',
     import.meta.url
 ), 'utf8');
 
